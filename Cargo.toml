@@ -1,0 +1,16 @@
+[package]
+name = "septid"
+version = "0.1.0"
+authors = ["Chris West (Faux) <git@goeswhere.com>"]
+edition = "2018"
+
+[dependencies]
+digest = "0.8"
+failure = "0.1"
+getopts = "0.2"
+mio = "0.6"
+sha2 = "0.8"
+
+[dependencies.signal-hook]
+features = ["mio"]
+version = "0.1"
