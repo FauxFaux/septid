@@ -2,9 +2,11 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io;
+use std::mem;
 
+use failure::err_msg;
 use failure::Error;
-use mio::tcp::TcpListener;
+use mio::tcp::{TcpListener, TcpStream};
 use mio::Token;
 
 type Key = [u8; 32];
@@ -68,13 +70,112 @@ fn main() -> Result<(), Error> {
 
     assert!(!matches.opt_present("u"), "-u unsupported");
 
-    let server = Server {
+    let mut server = Server {
         encrypt,
         key,
         clients: HashMap::new(),
-        source,
+        source: Some(source),
         target,
     };
+
+    let signals =
+        signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
+
+    const SERVER: Token = Token(1);
+    const SIGNALS: Token = Token(2);
+
+    let poll = mio::Poll::new()?;
+    poll.register(
+        server.source.as_ref().unwrap(),
+        SERVER,
+        mio::Ready::readable(),
+        mio::PollOpt::edge(),
+    )?;
+
+    poll.register(
+        &signals,
+        SIGNALS,
+        mio::Ready::readable(),
+        mio::PollOpt::edge(),
+    )?;
+
+    let mut next_token = 10usize;
+
+    let mut events = mio::Events::with_capacity(32);
+    'app: loop {
+        poll.poll(&mut events, None)?;
+        for event in &events {
+            match event.token() {
+                SERVER => {
+                    if !event.readiness().is_readable() {
+                        continue;
+                    }
+
+                    let source = match server.source.as_ref() {
+                        Some(listener) => listener,
+                        None => continue,
+                    };
+
+                    let (input, _) = source.accept()?;
+                    let addr = {
+                        use std::net::ToSocketAddrs;
+                        server
+                            .target
+                            .to_socket_addrs()?
+                            .next()
+                            .ok_or_else(|| err_msg("no resolution"))?
+                    };
+
+                    let output = mio::net::TcpStream::connect(&addr)?;
+
+                    let in_token = Token(next_token);
+                    next_token.checked_add(1).unwrap();
+                    let out_token = Token(next_token);
+                    next_token.checked_add(1).unwrap();
+
+                    poll.register(
+                        &input,
+                        in_token,
+                        mio::Ready::readable(),
+                        mio::PollOpt::edge(),
+                    )?;
+
+                    poll.register(
+                        &output,
+                        out_token,
+                        mio::Ready::writable(),
+                        mio::PollOpt::edge(),
+                    )?;
+
+                    server.clients.insert(in_token, Conn { input, output });
+                }
+                SIGNALS => {
+                    // spurious wakeup, do nothing
+                    // do we need to consume the iterator (with .count), vs. just .next?
+                    if 0 == signals.pending().count() {
+                        continue;
+                    }
+
+                    match server.source.take() {
+                        // first time, drop the incoming connection
+                        Some(listen) => mem::drop(listen),
+                        // been here before, just cancel the whole app
+                        None => break 'app,
+                    };
+
+                    println!("no longer accepting new connections");
+                    println!("waiting for existing connections to terminate...");
+
+                    if server.clients.is_empty() {
+                        break 'app;
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    println!("done");
 
     Ok(())
 }
@@ -96,9 +197,12 @@ fn load_key(from: &str) -> Result<Key, Error> {
 struct Server {
     encrypt: bool,
     key: Key,
-    source: TcpListener,
+    source: Option<TcpListener>,
     target: String,
     clients: HashMap<Token, Conn>,
 }
 
-struct Conn {}
+struct Conn {
+    input: TcpStream,
+    output: TcpStream,
+}

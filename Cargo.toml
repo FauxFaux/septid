@@ -12,5 +12,5 @@ mio = "0.6"
 sha2 = "0.8"
 
 [dependencies.signal-hook]
-features = ["mio"]
+features = ["mio-support"]
 version = "0.1"
