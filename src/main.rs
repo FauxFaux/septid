@@ -8,6 +8,7 @@ use failure::err_msg;
 use failure::Error;
 use mio::tcp::{TcpListener, TcpStream};
 use mio::Token;
+use std::io::Write;
 
 type Key = [u8; 32];
 
@@ -147,7 +148,15 @@ fn main() -> Result<(), Error> {
                         mio::PollOpt::edge(),
                     )?;
 
-                    server.clients.insert(in_token, Conn { input, output });
+                    server.clients.insert(
+                        in_token,
+                        Conn {
+                            input,
+                            output,
+                            to_input: Vec::new(),
+                            to_output: Vec::new(),
+                        },
+                    );
                 }
                 SIGNALS => {
                     // spurious wakeup, do nothing
@@ -170,12 +179,78 @@ fn main() -> Result<(), Error> {
                         break 'app;
                     }
                 }
-                _ => unreachable!(),
+                client => {
+                    if let Some(conn) = server.clients.get_mut(&round_down(client)) {
+                        duplify(conn)?;
+                    }
+                }
             }
         }
     }
 
     println!("done");
+
+    Ok(())
+}
+
+/// 2 -> 2, 3 -> 2, 4 -> 4, 5 -> 4
+fn round_down(value: Token) -> Token {
+    Token(value.0 & !1)
+}
+
+fn duplify(conn: &mut Conn) -> Result<(), Error> {
+    use std::io::Read;
+
+    flush_buffer(&mut conn.input, &mut conn.to_input)?;
+    flush_buffer(&mut conn.output, &mut conn.to_output)?;
+
+    let mut buf = [0u8; 4096];
+
+    while let Some(input) = conn.input.read(&mut buf).map_non_block()? {
+        if 0 == input {
+            unimplemented!("eof");
+        }
+
+        let buf = &buf[..input];
+
+        // TODO: mutate the buf slice again?
+        let mut idx = 0;
+
+        while let Some(written) = conn.output.write(&buf[idx..]).map_non_block()? {
+            if 0 == written {
+                unimplemented!("eof");
+            }
+
+            idx += written;
+
+            if buf.len() == idx {
+                break;
+            }
+        }
+
+        if buf.len() == idx {
+            continue;
+        }
+
+        let buf = &buf[idx..];
+
+        conn.to_output.extend_from_slice(buf);
+        break;
+    }
+
+    Ok(())
+}
+
+fn flush_buffer(sock: &mut TcpStream, buf: &mut Vec<u8>) -> Result<(), Error> {
+    if buf.is_empty() {
+        return Ok(());
+    }
+
+    use std::io::Write;
+
+    while let Some(len) = sock.write(buf).map_non_block()? {
+        buf.drain(..len);
+    }
 
     Ok(())
 }
@@ -205,4 +280,30 @@ struct Server {
 struct Conn {
     input: TcpStream,
     output: TcpStream,
+    to_output: Vec<u8>,
+    to_input: Vec<u8>,
+}
+
+/// A helper trait to provide the map_non_block function on Results.
+pub trait MapNonBlock<T> {
+    /// Maps a `Result<T>` to a `Result<Option<T>>` by converting
+    /// operation-would-block errors into `Ok(None)`.
+    fn map_non_block(self) -> io::Result<Option<T>>;
+}
+
+impl<T> MapNonBlock<T> for io::Result<T> {
+    fn map_non_block(self) -> io::Result<Option<T>> {
+        use std::io::ErrorKind::WouldBlock;
+
+        match self {
+            Ok(value) => Ok(Some(value)),
+            Err(err) => {
+                if let WouldBlock = err.kind() {
+                    Ok(None)
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
 }
