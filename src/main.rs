@@ -151,10 +151,8 @@ fn main() -> Result<(), Error> {
                     server.clients.insert(
                         in_token,
                         Conn {
-                            input,
-                            output,
-                            to_input: Vec::new(),
-                            to_output: Vec::new(),
+                            input: Stream::new(input),
+                            output: Stream::new(output),
                         },
                     );
                 }
@@ -201,14 +199,14 @@ fn round_down(value: Token) -> Token {
 fn duplify(conn: &mut Conn) -> Result<(), Error> {
     use std::io::Read;
 
-    flush_buffer(&mut conn.input, &mut conn.to_input)?;
-    flush_buffer(&mut conn.output, &mut conn.to_output)?;
+    flush_buffer(&mut conn.input)?;
+    flush_buffer(&mut conn.output)?;
 
     let mut buf = [0u8; 4096];
 
-    while let Some(input) = conn.input.read(&mut buf).map_non_block()? {
+    while let Some(input) = conn.input.inner.read(&mut buf).map_non_block()? {
         if 0 == input {
-            unimplemented!("eof");
+            unimplemented!("eof read");
         }
 
         let buf = &buf[..input];
@@ -216,9 +214,9 @@ fn duplify(conn: &mut Conn) -> Result<(), Error> {
         // TODO: mutate the buf slice again?
         let mut idx = 0;
 
-        while let Some(written) = conn.output.write(&buf[idx..]).map_non_block()? {
+        while let Some(written) = conn.output.inner.write(&buf[idx..]).map_non_block()? {
             if 0 == written {
-                unimplemented!("eof");
+                unimplemented!("eof write");
             }
 
             idx += written;
@@ -234,14 +232,19 @@ fn duplify(conn: &mut Conn) -> Result<(), Error> {
 
         let buf = &buf[idx..];
 
-        conn.to_output.extend_from_slice(buf);
+        conn.output.write_buffer.extend_from_slice(buf);
         break;
     }
 
     Ok(())
 }
 
-fn flush_buffer(sock: &mut TcpStream, buf: &mut Vec<u8>) -> Result<(), Error> {
+fn flush_buffer(stream: &mut Stream) -> Result<(), Error> {
+    let Stream {
+        write_buffer: buf,
+        inner: sock,
+    } = stream;
+
     if buf.is_empty() {
         return Ok(());
     }
@@ -278,10 +281,22 @@ struct Server {
 }
 
 struct Conn {
-    input: TcpStream,
-    output: TcpStream,
-    to_output: Vec<u8>,
-    to_input: Vec<u8>,
+    input: Stream,
+    output: Stream,
+}
+
+struct Stream {
+    inner: TcpStream,
+    write_buffer: Vec<u8>,
+}
+
+impl Stream {
+    fn new(inner: TcpStream) -> Stream {
+        Stream {
+            inner,
+            write_buffer: Vec::new(),
+        }
+    }
 }
 
 /// A helper trait to provide the map_non_block function on Results.
