@@ -8,7 +8,7 @@ use failure::err_msg;
 use failure::Error;
 use mio::tcp::{TcpListener, TcpStream};
 use mio::Token;
-use std::io::Write;
+use std::io::{Read, Write};
 
 type Key = [u8; 32];
 
@@ -204,36 +204,38 @@ fn duplify(conn: &mut Conn) -> Result<(), Error> {
 
     let mut buf = [0u8; 4096];
 
-    while let Some(input) = conn.input.inner.read(&mut buf).map_non_block()? {
-        if 0 == input {
-            unimplemented!("eof read");
+    fill_buffer_target(&mut conn.input, 5)?;
+
+    conn.output
+        .write_buffer
+        .extend_from_slice(&conn.input.read_buffer);
+    conn.input.read_buffer.truncate(0);
+
+    flush_buffer(&mut conn.output)?;
+
+    Ok(())
+}
+
+fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), Error> {
+    let Stream {
+        read_buffer,
+        inner: sock,
+        ..
+    } = stream;
+
+    while read_buffer.len() < target {
+        let mut buf = [0u8; 4096];
+        let len = match sock.read(&mut buf).map_non_block()? {
+            Some(len) => len,
+            None => break,
+        };
+
+        let buf = &buf[..len];
+        if buf.is_empty() {
+            // TODO: do we need to handle EOF here?
+            break;
         }
-
-        let buf = &buf[..input];
-
-        // TODO: mutate the buf slice again?
-        let mut idx = 0;
-
-        while let Some(written) = conn.output.inner.write(&buf[idx..]).map_non_block()? {
-            if 0 == written {
-                unimplemented!("eof write");
-            }
-
-            idx += written;
-
-            if buf.len() == idx {
-                break;
-            }
-        }
-
-        if buf.len() == idx {
-            continue;
-        }
-
-        let buf = &buf[idx..];
-
-        conn.output.write_buffer.extend_from_slice(buf);
-        break;
+        read_buffer.extend_from_slice(buf);
     }
 
     Ok(())
@@ -243,6 +245,7 @@ fn flush_buffer(stream: &mut Stream) -> Result<(), Error> {
     let Stream {
         write_buffer: buf,
         inner: sock,
+        ..
     } = stream;
 
     if buf.is_empty() {
@@ -252,6 +255,11 @@ fn flush_buffer(stream: &mut Stream) -> Result<(), Error> {
     use std::io::Write;
 
     while let Some(len) = sock.write(buf).map_non_block()? {
+        if len == buf.len() {
+            buf.truncate(0);
+            break;
+        }
+
         buf.drain(..len);
     }
 
@@ -287,6 +295,7 @@ struct Conn {
 
 struct Stream {
     inner: TcpStream,
+    read_buffer: Vec<u8>,
     write_buffer: Vec<u8>,
 }
 
@@ -294,6 +303,7 @@ impl Stream {
     fn new(inner: TcpStream) -> Stream {
         Stream {
             inner,
+            read_buffer: Vec::new(),
             write_buffer: Vec::new(),
         }
     }
