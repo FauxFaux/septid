@@ -6,11 +6,14 @@ use std::mem;
 
 use failure::err_msg;
 use failure::Error;
-use mio::tcp::{TcpListener, TcpStream};
+use failure::ResultExt;
+use mio::tcp::TcpListener;
+use mio::tcp::TcpStream;
 use mio::Token;
-use std::io::{Read, Write};
+use ring::rand::SecureRandom;
 
-type Key = [u8; 32];
+type Bits256 = [u8; 32];
+type Bits2048 = [u8; 256];
 
 fn main() -> Result<(), Error> {
     let mut args = env::args();
@@ -70,6 +73,10 @@ fn main() -> Result<(), Error> {
     let key = load_key(&key_path)?;
 
     assert!(!matches.opt_present("u"), "-u unsupported");
+
+    let mut rng = ring::rand::SystemRandom::new();
+    rng.fill(&mut [0u8; 1])
+        .with_context(|_| err_msg("paranoid random number warm-up"))?;
 
     let mut server = Server {
         encrypt,
@@ -148,11 +155,27 @@ fn main() -> Result<(), Error> {
                         mio::PollOpt::edge(),
                     )?;
 
+                    let crypto = Crypto {
+                        our_nonce: rand256(&mut rng)?,
+                        our_x: rand256(&mut rng)?,
+                        setup: ConnSetup::NonceSent,
+                    };
+
+                    let mut input = Stream::new(input);
+                    let mut output = Stream::new(output);
+
+                    if encrypt {
+                        output.write_buffer.extend_from_slice(&crypto.our_nonce);
+                    } else {
+                        input.write_buffer.extend_from_slice(&crypto.our_nonce);
+                    }
+
                     server.clients.insert(
                         in_token,
                         Conn {
-                            input: Stream::new(input),
-                            output: Stream::new(output),
+                            input,
+                            output,
+                            crypto,
                         },
                     );
                 }
@@ -224,6 +247,7 @@ fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), Error> {
     } = stream;
 
     while read_buffer.len() < target {
+        use std::io::Read;
         let mut buf = [0u8; 4096];
         let len = match sock.read(&mut buf).map_non_block()? {
             Some(len) => len,
@@ -266,7 +290,7 @@ fn flush_buffer(stream: &mut Stream) -> Result<(), Error> {
     Ok(())
 }
 
-fn load_key(from: &str) -> Result<Key, Error> {
+fn load_key(from: &str) -> Result<Bits256, Error> {
     use digest::Digest as _;
     use digest::FixedOutput as _;
 
@@ -282,7 +306,7 @@ fn load_key(from: &str) -> Result<Key, Error> {
 
 struct Server {
     encrypt: bool,
-    key: Key,
+    key: Bits256,
     source: Option<TcpListener>,
     target: String,
     clients: HashMap<Token, Conn>,
@@ -291,12 +315,40 @@ struct Server {
 struct Conn {
     input: Stream,
     output: Stream,
+    crypto: Crypto,
 }
 
 struct Stream {
     inner: TcpStream,
     read_buffer: Vec<u8>,
     write_buffer: Vec<u8>,
+}
+
+#[derive(Copy, Clone)]
+struct ConnNonce {
+    other_nonce: Bits256,
+    dh_mac_client: Bits256,
+    dh_mac_server: Bits256,
+}
+
+#[derive(Copy, Clone)]
+enum ConnSetup {
+    NonceSent,
+    NonceReceived {
+        their_nonce: ConnNonce,
+    },
+    YReceived {
+        nonce: ConnNonce,
+        their_y: Bits2048,
+        their_h: Bits256,
+    },
+}
+
+#[derive(Copy, Clone)]
+struct Crypto {
+    our_nonce: Bits256,
+    our_x: Bits256,
+    setup: ConnSetup,
 }
 
 impl Stream {
@@ -307,6 +359,12 @@ impl Stream {
             write_buffer: Vec::new(),
         }
     }
+}
+
+fn rand256(rng: &mut ring::rand::SystemRandom) -> Result<Bits256, Error> {
+    let mut ret = Bits256::default();
+    rng.fill(&mut ret)?;
+    Ok(ret)
 }
 
 /// A helper trait to provide the map_non_block function on Results.
