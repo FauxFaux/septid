@@ -7,8 +7,8 @@ use std::mem;
 use failure::err_msg;
 use failure::Error;
 use failure::ResultExt;
-use mio::tcp::TcpListener;
-use mio::tcp::TcpStream;
+use mio::net::TcpListener;
+use mio::net::TcpStream;
 use mio::Token;
 use ring::rand::SecureRandom;
 
@@ -134,26 +134,12 @@ fn main() -> Result<(), Error> {
                             .ok_or_else(|| err_msg("no resolution"))?
                     };
 
-                    let output = mio::net::TcpStream::connect(&addr)?;
+                    let output = TcpStream::connect(&addr)?;
 
                     let in_token = Token(next_token);
                     next_token.checked_add(1).unwrap();
                     let out_token = Token(next_token);
                     next_token.checked_add(1).unwrap();
-
-                    poll.register(
-                        &input,
-                        in_token,
-                        mio::Ready::readable(),
-                        mio::PollOpt::edge(),
-                    )?;
-
-                    poll.register(
-                        &output,
-                        out_token,
-                        mio::Ready::writable(),
-                        mio::PollOpt::edge(),
-                    )?;
 
                     let crypto = Crypto {
                         our_nonce: rand256(&mut rng)?,
@@ -161,13 +147,18 @@ fn main() -> Result<(), Error> {
                         setup: ConnSetup::NonceSent,
                     };
 
-                    let mut input = Stream::new(input);
-                    let mut output = Stream::new(output);
+                    let mut input = Stream::new(input, in_token);
+                    input.initial_registration(&poll)?;
+
+                    let mut output = Stream::new(output, out_token);
+                    output.initial_registration(&poll)?;
 
                     if encrypt {
                         output.write_buffer.extend_from_slice(&crypto.our_nonce);
+                        flush_buffer(&mut output)?;
                     } else {
                         input.write_buffer.extend_from_slice(&crypto.our_nonce);
+                        flush_buffer(&mut input)?;
                     }
 
                     server.clients.insert(
@@ -320,6 +311,7 @@ struct Conn {
 
 struct Stream {
     inner: TcpStream,
+    token: mio::Token,
     read_buffer: Vec<u8>,
     write_buffer: Vec<u8>,
 }
@@ -352,12 +344,22 @@ struct Crypto {
 }
 
 impl Stream {
-    fn new(inner: TcpStream) -> Stream {
+    fn new(inner: TcpStream, token: mio::Token) -> Stream {
         Stream {
             inner,
+            token,
             read_buffer: Vec::new(),
             write_buffer: Vec::new(),
         }
+    }
+
+    fn initial_registration(&self, poll: &mio::Poll) -> Result<(), io::Error> {
+        poll.register(
+            &self.inner,
+            self.token,
+            mio::Ready::readable(),
+            mio::PollOpt::edge(),
+        )
     }
 }
 
