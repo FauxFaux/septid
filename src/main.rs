@@ -193,7 +193,7 @@ fn main() -> Result<(), Error> {
                 }
                 client => {
                     if let Some(conn) = server.clients.get_mut(&round_down(client)) {
-                        duplify(conn)?;
+                        duplify(key, decrypt, conn)?;
                     }
                 }
             }
@@ -210,15 +210,53 @@ fn round_down(value: Token) -> Token {
     Token(value.0 & !1)
 }
 
-fn duplify(conn: &mut Conn) -> Result<(), Error> {
+fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
     use std::io::Read;
 
     flush_buffer(&mut conn.input)?;
     flush_buffer(&mut conn.output)?;
 
-    let mut buf = [0u8; 4096];
+    loop {
+        match conn.crypto.setup {
+            ConnSetup::NonceSent => {
+                let negotiate = if decrypt {
+                    &mut conn.input
+                } else {
+                    &mut conn.output
+                };
+                let nonce_len = Bits256::default().len();
+                fill_buffer_target(negotiate, nonce_len)?;
+                if negotiate.read_buffer.len() < nonce_len {
+                    break;
+                }
 
-    fill_buffer_target(&mut conn.input, 5)?;
+                // TODO: wat
+                let mut other_nonce = Bits256::default();
+                other_nonce
+                    .copy_from_slice(&negotiate.read_buffer.drain(..nonce_len).collect::<Vec<_>>());
+
+                let mut dh_mac_client = Bits256::default();
+                let mut dh_mac_server = Bits256::default();
+
+                let mut double_nonce = [0u8; 32 * 2];
+                double_nonce[..32].copy_from_slice(&conn.crypto.our_nonce);
+                double_nonce[32..].copy_from_slice(&other_nonce);
+
+                let mut double_dk = [0u8; 32 * 2];
+                pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key, &double_nonce, 1, &mut double_dk);
+
+                dh_mac_client.copy_from_slice(&double_dk[..32]);
+                dh_mac_server.copy_from_slice(&double_dk[32..]);
+
+                let nonces = ConnNonce {
+                    other_nonce,
+                    dh_mac_client,
+                    dh_mac_server,
+                };
+            }
+            _ => unimplemented!("crypto state not done yet"),
+        }
+    }
 
     conn.output
         .write_buffer

@@ -10,6 +10,7 @@ getopts = "0.2"
 mio = "0.6"
 ring = "0.14"
 sha2 = "0.8"
+hmac = "0.7.0"
 
 [dependencies.failure]
 default-features = false
