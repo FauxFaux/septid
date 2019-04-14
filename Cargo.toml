@@ -6,11 +6,15 @@ edition = "2018"
 
 [dependencies]
 digest = "0.8"
-failure = "0.1"
 getopts = "0.2"
 mio = "0.6"
 ring = "0.14"
 sha2 = "0.8"
+
+[dependencies.failure]
+default-features = false
+features = ["std"]
+version = "0.1"
 
 [dependencies.pbkdf2]
 default-features = false
