@@ -4,6 +4,11 @@ use std::fs;
 use std::io;
 use std::mem;
 
+use aes_ctr::stream_cipher::NewStreamCipher;
+use aes_ctr::stream_cipher::SyncStreamCipher;
+use aes_ctr::Aes256Ctr;
+use byteorder::WriteBytesExt;
+use byteorder::BE;
 use crypto_mac::Mac;
 use failure::ensure;
 use failure::err_msg;
@@ -218,8 +223,6 @@ fn round_down(value: Token) -> Token {
 }
 
 fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
-    use std::io::Read;
-
     flush_buffer(&mut conn.input)?;
     flush_buffer(&mut conn.output)?;
 
@@ -302,7 +305,6 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 let y_h_len = 256 + Bits256::default().len();
                 fill_buffer_target(negotiate, y_h_len)?;
                 if negotiate.read_buffer.len() < y_h_len {
-                    println!("insufficient read: {}", negotiate.read_buffer.len());
                     break;
                 }
 
@@ -321,6 +323,8 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 let their_y = BigUint::from_bytes_be(&negotiate.read_buffer[..256]);
                 let prime = BigUint::from_bytes_be(&crypto::GROUP_14_PRIME);
                 ensure!(their_y < prime, "bad y");
+
+                drop(negotiate.read_buffer.drain(..256 + 32));
 
                 let shared = their_y.modpow(&conn.crypto.our_x, &prime).to_bytes_be();
                 assert_eq!(256, shared.len(), "short shared");
@@ -348,8 +352,12 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                     }
                 }
             }
-            ConnSetup::Done { ours, theirs } => {
-                unimplemented!("done");
+            ConnSetup::Done {
+                ref ours,
+                ref theirs,
+            } => {
+                stream(ours, theirs, &mut conn.input, &mut conn.output)?;
+                stream(theirs, ours, &mut conn.output, &mut conn.input)?;
             }
         }
     }
@@ -358,6 +366,43 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
     flush_buffer(&mut conn.output)?;
 
     Ok(())
+}
+
+fn stream(
+    (recv_enc, recv_mac): &(Bits256, Bits256),
+    (send_enc, send_mac): &(Bits256, Bits256),
+    from: &mut Stream,
+    to: &mut Stream,
+) -> Result<(), Error> {
+    let enc_message_len = 1024 + 4;
+    let packet_len = enc_message_len + 32;
+    fill_buffer_target(from, packet_len)?;
+    if from.read_buffer.len() < packet_len {
+        return Ok(());
+    }
+
+    println!("{}", from.read_buffer.len());
+    use subtle::ConstantTimeEq;
+    let mut buf = from
+        .read_buffer
+        .drain(..enc_message_len)
+        .collect::<Vec<u8>>();
+    // TODO: packet number
+    buf.write_u64::<BE>(0).expect("vec");
+    // TODO: surely.. recv.. would make more sense?
+    ensure!(
+        1 == crypto::mac(send_mac, &buf)
+            .ct_eq(&from.read_buffer[..32])
+            .unwrap_u8(),
+        "packet mac bad"
+    );
+
+    let mut cipher = Aes256Ctr::new_var(&send_enc[..], &[0u8; 16]).expect("length from arrays");
+    cipher.apply_keystream(&mut buf);
+
+    println!("{:?}", String::from_utf8_lossy(&buf));
+
+    unimplemented!("packet");
 }
 
 fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), Error> {
