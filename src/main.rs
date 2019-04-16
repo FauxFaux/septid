@@ -150,7 +150,7 @@ fn main() -> Result<(), Error> {
                     let crypto = Crypto {
                         client_nonce: rand256(&mut rng)?,
                         server_nonce: rand256(&mut rng)?,
-                        our_x: rand256(&mut rng)?,
+                        our_x: BigUint::from_bytes_le(&rand256(&mut rng)?),
                         setup: ConnSetup::NonceSent,
                     };
 
@@ -276,12 +276,14 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
 
                 // TODO: constant time
                 let our_y = two.modpow(
-                    &BigUint::from_bytes_be(&conn.crypto.our_x),
+                    &conn.crypto.our_x,
                     &BigUint::from_bytes_be(&crypto::GROUP_14_PRIME),
                 );
 
                 // TODO: pad to length
                 let our_y = our_y.to_bytes_be();
+                assert_eq!(256, our_y.len(), "short y");
+
                 negotiate.write_buffer.extend_from_slice(&our_y);
 
                 let y_mac =
@@ -317,10 +319,38 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 ensure!(expected_mac.ct_eq(their_mac).unwrap_u8() == 1, "bad mac");
 
                 let their_y = BigUint::from_bytes_be(&negotiate.read_buffer[..256]);
+                let prime = BigUint::from_bytes_be(&crypto::GROUP_14_PRIME);
+                ensure!(their_y < prime, "bad y");
 
-                unimplemented!("handling y");
+                let shared = their_y.modpow(&conn.crypto.our_x, &prime).to_bytes_be();
+                assert_eq!(256, shared.len(), "short shared");
+
+                let mut buf = Vec::with_capacity(32 + 32 + 256);
+                buf.extend_from_slice(&conn.crypto.client_nonce);
+                buf.extend_from_slice(&conn.crypto.server_nonce);
+                buf.extend_from_slice(&shared);
+
+                let mut quad_dk = [0u8; 32 * 4];
+                pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key, &buf, 1, &mut quad_dk);
+
+                let server = two_keys(&quad_dk[..64]);
+                let client = two_keys(&quad_dk[64..]);
+
+                conn.crypto.setup = if decrypt {
+                    ConnSetup::Done {
+                        ours: server,
+                        theirs: client,
+                    }
+                } else {
+                    ConnSetup::Done {
+                        ours: client,
+                        theirs: server,
+                    }
+                }
             }
-            _ => unimplemented!("crypto state not done yet"),
+            ConnSetup::Done { ours, theirs } => {
+                unimplemented!("done");
+            }
         }
     }
 
@@ -395,6 +425,16 @@ fn load_key(from: &str) -> Result<Bits256, Error> {
     Ok(key)
 }
 
+fn two_keys(buf: &[u8]) -> (Bits256, Bits256) {
+    assert_eq!(2 * 32, buf.len());
+
+    let mut k1 = Bits256::default();
+    let mut k2 = Bits256::default();
+    k1.copy_from_slice(&buf[..32]);
+    k2.copy_from_slice(&buf[32..]);
+    (k1, k2)
+}
+
 struct Server {
     encrypt: bool,
     key: Bits256,
@@ -428,18 +468,17 @@ enum ConnSetup {
     NonceReceived {
         nonce: ConnNonce,
     },
-    YReceived {
-        nonce: ConnNonce,
-        their_y: Bits2048,
-        their_h: Bits256,
+    Done {
+        ours: (Bits256, Bits256),
+        theirs: (Bits256, Bits256),
     },
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 struct Crypto {
     client_nonce: Bits256,
     server_nonce: Bits256,
-    our_x: Bits256,
+    our_x: BigUint,
     setup: ConnSetup,
 }
 
