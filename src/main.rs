@@ -5,6 +5,7 @@ use std::io;
 use std::mem;
 
 use crypto_mac::Mac;
+use failure::ensure;
 use failure::err_msg;
 use failure::Error;
 use failure::ResultExt;
@@ -266,7 +267,7 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 dh_mac_client.copy_from_slice(&double_dk[..32]);
                 dh_mac_server.copy_from_slice(&double_dk[32..]);
 
-                let nonces = ConnNonce {
+                let nonce = ConnNonce {
                     dh_mac_client,
                     dh_mac_server,
                 };
@@ -287,9 +288,9 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                     crypto::mac(&if server { dh_mac_server } else { dh_mac_client }, &our_y);
                 negotiate.write_buffer.extend_from_slice(&y_mac);
 
-                conn.crypto.setup = ConnSetup::NonceReceived;
+                conn.crypto.setup = ConnSetup::NonceReceived { nonce };
             }
-            ConnSetup::NonceReceived => {
+            ConnSetup::NonceReceived { nonce } => {
                 let negotiate = if decrypt {
                     &mut conn.input
                 } else {
@@ -299,19 +300,31 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 let y_h_len = 256 + Bits256::default().len();
                 fill_buffer_target(negotiate, y_h_len)?;
                 if negotiate.read_buffer.len() < y_h_len {
+                    println!("insufficient read: {}", negotiate.read_buffer.len());
                     break;
                 }
-                unimplemented!("nonce reception not implemented")
+
+                let their_mac = &negotiate.read_buffer[256..][..32];
+                let expected_mac = crypto::mac(
+                    &if decrypt {
+                        nonce.dh_mac_client
+                    } else {
+                        nonce.dh_mac_server
+                    },
+                    &negotiate.read_buffer[..256],
+                );
+                use subtle::ConstantTimeEq;
+                ensure!(expected_mac.ct_eq(their_mac).unwrap_u8() == 1, "bad mac");
+
+                let their_y = BigUint::from_bytes_be(&negotiate.read_buffer[..256]);
+
+                unimplemented!("handling y");
             }
             _ => unimplemented!("crypto state not done yet"),
         }
     }
 
-    conn.output
-        .write_buffer
-        .extend_from_slice(&conn.input.read_buffer);
-    conn.input.read_buffer.truncate(0);
-
+    flush_buffer(&mut conn.input)?;
     flush_buffer(&mut conn.output)?;
 
     Ok(())
@@ -412,7 +425,9 @@ struct ConnNonce {
 #[derive(Copy, Clone)]
 enum ConnSetup {
     NonceSent,
-    NonceReceived,
+    NonceReceived {
+        nonce: ConnNonce,
+    },
     YReceived {
         nonce: ConnNonce,
         their_y: Bits2048,
