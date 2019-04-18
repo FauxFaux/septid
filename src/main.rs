@@ -147,9 +147,9 @@ fn main() -> Result<(), Error> {
                     let output = TcpStream::connect(&addr)?;
 
                     let in_token = Token(next_token);
-                    next_token.checked_add(1).unwrap();
+                    next_token = next_token.checked_add(1).unwrap();
                     let out_token = Token(next_token);
-                    next_token.checked_add(1).unwrap();
+                    next_token = next_token.checked_add(1).unwrap();
 
                     let crypto = Crypto {
                         client_nonce: rand256(&mut rng)?,
