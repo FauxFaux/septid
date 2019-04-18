@@ -356,8 +356,8 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 ref ours,
                 ref theirs,
             } => {
-                stream(ours, theirs, &mut conn.input, &mut conn.output)?;
-                stream(theirs, ours, &mut conn.output, &mut conn.input)?;
+                stream(theirs, ours, &mut conn.input, &mut conn.output)?;
+                stream(ours, theirs, &mut conn.output, &mut conn.input)?;
             }
         }
     }
@@ -389,15 +389,14 @@ fn stream(
         .collect::<Vec<u8>>();
     // TODO: packet number
     buf.write_u64::<BE>(0).expect("vec");
-    // TODO: surely.. recv.. would make more sense?
     ensure!(
-        1 == crypto::mac(send_mac, &buf)
+        1 == crypto::mac(recv_mac, &buf)
             .ct_eq(&from.read_buffer[..32])
             .unwrap_u8(),
         "packet mac bad"
     );
 
-    let mut cipher = Aes256Ctr::new_var(&send_enc[..], &[0u8; 16]).expect("length from arrays");
+    let mut cipher = Aes256Ctr::new_var(&recv_enc[..], &[0u8; 16]).expect("length from arrays");
     cipher.apply_keystream(&mut buf);
 
     println!("{:?}", String::from_utf8_lossy(&buf));
