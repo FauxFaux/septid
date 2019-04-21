@@ -177,6 +177,8 @@ fn main() -> Result<(), Error> {
                         Conn {
                             input,
                             output,
+                            packet_number_recv: 0,
+                            packet_number_send: 0,
                             crypto,
                         },
                     );
@@ -509,6 +511,8 @@ struct Server {
 struct Conn {
     input: Stream,
     output: Stream,
+    packet_number_recv: u64,
+    packet_number_send: u64,
     crypto: Crypto,
 }
 
