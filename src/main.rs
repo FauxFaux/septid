@@ -152,12 +152,7 @@ fn main() -> Result<(), Error> {
                     let out_token = Token(next_token);
                     next_token = next_token.checked_add(1).unwrap();
 
-                    let crypto = Crypto {
-                        client_nonce: rand256(&mut rng)?,
-                        server_nonce: rand256(&mut rng)?,
-                        our_x: BigUint::from_bytes_le(&rand256(&mut rng)?),
-                        setup: ConnSetup::NonceSent,
-                    };
+                    let our_nonce = rand256(&mut rng)?;
 
                     let mut input = Stream::new(input, in_token);
                     input.initial_registration(&poll)?;
@@ -166,10 +161,10 @@ fn main() -> Result<(), Error> {
                     output.initial_registration(&poll)?;
 
                     if encrypt {
-                        output.write_buffer.extend_from_slice(&crypto.client_nonce);
+                        output.write_buffer.extend_from_slice(&our_nonce);
                         flush_buffer(&mut output)?;
                     } else {
-                        input.write_buffer.extend_from_slice(&crypto.server_nonce);
+                        input.write_buffer.extend_from_slice(&our_nonce);
                         flush_buffer(&mut input)?;
                     }
 
@@ -180,7 +175,10 @@ fn main() -> Result<(), Error> {
                             output,
                             packet_number_recv: 0,
                             packet_number_send: 0,
-                            crypto,
+                            crypto: Crypto::NonceSent {
+                                    our_nonce,
+                                    our_x: rand256(&mut rng)?,
+                            },
                         },
                     );
                 }
@@ -229,8 +227,8 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
     flush_buffer(&mut conn.output)?;
 
     loop {
-        match conn.crypto.setup {
-            ConnSetup::NonceSent => {
+        match conn.crypto {
+            Crypto::NonceSent { our_nonce, our_x } => {
                 let negotiate = if decrypt {
                     &mut conn.input
                 } else {
@@ -245,23 +243,19 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                     break;
                 }
 
-                {
-                    // TODO: wat
-                    let mut other_nonce = Bits256::default();
-                    other_nonce.copy_from_slice(
-                        &negotiate.read_buffer.drain(..nonce_len).collect::<Vec<_>>(),
-                    );
+                let mut other_nonce = Bits256::default();
+                other_nonce.copy_from_slice(&negotiate.read_buffer[..nonce_len]);
+                drop(negotiate.read_buffer.drain(..nonce_len));
 
-                    if server {
-                        conn.crypto.client_nonce.copy_from_slice(&other_nonce);
-                    } else {
-                        conn.crypto.server_nonce.copy_from_slice(&other_nonce);
-                    }
-                }
+                let (client_nonce, server_nonce) = if decrypt {
+                    (other_nonce, our_nonce)
+                } else {
+                    (our_nonce, other_nonce)
+                };
 
                 let mut nonces = [0u8; 32 * 2];
-                nonces[..32].copy_from_slice(&conn.crypto.client_nonce);
-                nonces[32..].copy_from_slice(&conn.crypto.server_nonce);
+                nonces[..32].copy_from_slice(&client_nonce);
+                nonces[32..].copy_from_slice(&server_nonce);
 
                 let mut double_dk = [0u8; 32 * 2];
                 pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key, &nonces, 1, &mut double_dk);
@@ -272,16 +266,11 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 dh_mac_client.copy_from_slice(&double_dk[..32]);
                 dh_mac_server.copy_from_slice(&double_dk[32..]);
 
-                let nonce = ConnNonce {
-                    dh_mac_client,
-                    dh_mac_server,
-                };
-
                 let two = BigUint::from(2u8);
 
                 // TODO: constant time
                 let our_y = two.modpow(
-                    &conn.crypto.our_x,
+                    &BigUint::from_bytes_be(&our_x),
                     &BigUint::from_bytes_be(&crypto::GROUP_14_PRIME),
                 );
 
@@ -295,9 +284,17 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                     crypto::mac(&if server { dh_mac_server } else { dh_mac_client }, &our_y);
                 negotiate.write_buffer.extend_from_slice(&y_mac);
 
-                conn.crypto.setup = ConnSetup::NonceReceived { nonce };
+                conn.crypto = Crypto::NonceReceived {
+                    nonces,
+                    our_x,
+                    their_mac_key: if server { dh_mac_client } else { dh_mac_server },
+                };
             }
-            ConnSetup::NonceReceived { nonce } => {
+            Crypto::NonceReceived {
+                nonces,
+                our_x,
+                their_mac_key,
+            } => {
                 let negotiate = if decrypt {
                     &mut conn.input
                 } else {
@@ -311,14 +308,7 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 }
 
                 let their_mac = &negotiate.read_buffer[256..][..32];
-                let expected_mac = crypto::mac(
-                    &if decrypt {
-                        nonce.dh_mac_client
-                    } else {
-                        nonce.dh_mac_server
-                    },
-                    &negotiate.read_buffer[..256],
-                );
+                let expected_mac = crypto::mac(&their_mac_key, &negotiate.read_buffer[..256]);
                 use subtle::ConstantTimeEq;
                 ensure!(expected_mac.ct_eq(their_mac).unwrap_u8() == 1, "bad mac");
 
@@ -328,12 +318,13 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
 
                 drop(negotiate.read_buffer.drain(..256 + 32));
 
-                let shared = their_y.modpow(&conn.crypto.our_x, &prime).to_bytes_be();
+                let shared = their_y
+                    .modpow(&BigUint::from_bytes_be(&our_x), &prime)
+                    .to_bytes_be();
                 assert_eq!(256, shared.len(), "short shared");
 
                 let mut buf = Vec::with_capacity(32 + 32 + 256);
-                buf.extend_from_slice(&conn.crypto.client_nonce);
-                buf.extend_from_slice(&conn.crypto.server_nonce);
+                buf.extend_from_slice(&nonces);
                 buf.extend_from_slice(&shared);
 
                 let mut quad_dk = [0u8; 32 * 4];
@@ -342,19 +333,19 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 let server = two_keys(&quad_dk[..64]);
                 let client = two_keys(&quad_dk[64..]);
 
-                conn.crypto.setup = if decrypt {
-                    ConnSetup::Done {
+                conn.crypto = if decrypt {
+                    Crypto::Done {
                         ours: server,
                         theirs: client,
                     }
                 } else {
-                    ConnSetup::Done {
+                    Crypto::Done {
                         ours: client,
                         theirs: server,
                     }
                 }
             }
-            ConnSetup::Done {
+            Crypto::Done {
                 ref ours,
                 ref theirs,
             } => {
@@ -475,7 +466,7 @@ fn decrypt_stream(
     Ok(())
 }
 
-fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), Error> {
+fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), io::Error> {
     let Stream {
         read_buffer,
         inner: sock,
@@ -492,8 +483,7 @@ fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), Error> {
 
         let buf = &buf[..len];
         if buf.is_empty() {
-            // TODO: do we need to handle EOF here?
-            break;
+            return Err(io::ErrorKind::UnexpectedEof.into())
         }
         read_buffer.extend_from_slice(buf);
     }
@@ -501,7 +491,7 @@ fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), Error> {
     Ok(())
 }
 
-fn flush_buffer(stream: &mut Stream) -> Result<(), Error> {
+fn flush_buffer(stream: &mut Stream) -> Result<(), io::Error> {
     let Stream {
         write_buffer: buf,
         inner: sock,
@@ -518,6 +508,10 @@ fn flush_buffer(stream: &mut Stream) -> Result<(), Error> {
         if len == buf.len() {
             buf.truncate(0);
             break;
+        }
+
+        if 0 == len {
+            return Err(io::ErrorKind::UnexpectedEof.into());
         }
 
         buf.drain(..len);
@@ -574,29 +568,20 @@ struct Stream {
 }
 
 #[derive(Copy, Clone)]
-struct ConnNonce {
-    dh_mac_client: Bits256,
-    dh_mac_server: Bits256,
-}
-
-#[derive(Copy, Clone)]
-enum ConnSetup {
-    NonceSent,
+enum Crypto {
+    NonceSent {
+        our_nonce: Bits256,
+        our_x: Bits256,
+    },
     NonceReceived {
-        nonce: ConnNonce,
+        nonces: [u8; 32 * 2],
+        our_x: Bits256,
+        their_mac_key: Bits256,
     },
     Done {
         ours: (Bits256, Bits256),
         theirs: (Bits256, Bits256),
     },
-}
-
-#[derive(Clone)]
-struct Crypto {
-    client_nonce: Bits256,
-    server_nonce: Bits256,
-    our_x: BigUint,
-    setup: ConnSetup,
 }
 
 impl Stream {

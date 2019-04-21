@@ -20,14 +20,21 @@ num-traits = "0.2"
 subtle = "2"
 
 [dependencies.failure]
+# features -= failure_derive (big dependencies)
 default-features = false
 features = ["std"]
 version = "0.1"
 
 [dependencies.pbkdf2]
+# features -= simple (big dependencies)
 default-features = false
 version = "0.3"
 
 [dependencies.signal-hook]
 features = ["mio-support"]
 version = "0.1"
+
+[dependencies.zeroize]
+# features -= zeroize_derive (buggy in 0.6)
+features = ["std"]
+version = "0.6"
