@@ -9,6 +9,7 @@ use aes_ctr::stream_cipher::SyncStreamCipher;
 use aes_ctr::Aes256Ctr;
 use byteorder::ByteOrder;
 use byteorder::BE;
+use cast::u32;
 use cast::usize;
 use failure::ensure;
 use failure::err_msg;
@@ -357,14 +358,59 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 ref ours,
                 ref theirs,
             } => {
-                decrypt_stream(theirs, &mut conn.input, &mut conn.output)?;
-                decrypt_stream(ours, &mut conn.output, &mut conn.input)?;
+                if decrypt {
+                    decrypt_stream(theirs, &mut conn.input, &mut conn.output)?;
+                    encrypt_stream(ours, &mut conn.output, &mut conn.input)?;
+                } else {
+                    encrypt_stream(theirs, &mut conn.input, &mut conn.output)?;
+                    decrypt_stream(ours, &mut conn.output, &mut conn.input)?;
+                }
             }
         }
     }
 
     flush_buffer(&mut conn.input)?;
     flush_buffer(&mut conn.output)?;
+
+    Ok(())
+}
+
+fn encrypt_stream(
+    (enc, mac): &(Bits256, Bits256),
+    from: &mut Stream,
+    to: &mut Stream,
+) -> Result<(), Error> {
+    let message_len = 1024;
+    let len_len = 4;
+    let mac_len = 32;
+    let msg_encrypted_len = message_len + len_len;
+    let packet_len = msg_encrypted_len + mac_len;
+
+    fill_buffer_target(from, message_len)?;
+    if from.read_buffer.is_empty() {
+        return Ok(());
+    }
+    let data_len = message_len.min(from.read_buffer.len());
+    let input = &from.read_buffer[..data_len];
+    let mut packet = [0u8; 1060];
+
+    (&mut packet[..data_len]).copy_from_slice(input);
+    BE::write_u32(&mut packet[message_len..], u32(data_len).expect("<1024"));
+
+    // TODO: packet number
+    let mut cipher = Aes256Ctr::new_var(&enc[..], &[0u8; 16]).expect("length from arrays");
+    cipher.apply_keystream(&mut packet[..msg_encrypted_len]);
+    drop(cipher);
+
+    // TODO: packet number
+    BE::write_u64(&mut packet[msg_encrypted_len..], 0);
+
+    let data_to_mac = &packet[..msg_encrypted_len + 8];
+    let hash = crypto::mac(mac, data_to_mac);
+    (&mut packet[msg_encrypted_len..]).copy_from_slice(&hash);
+
+    to.write_buffer.extend_from_slice(&packet);
+    from.read_buffer.drain(..data_len);
 
     Ok(())
 }
@@ -412,10 +458,14 @@ fn decrypt_stream(
     // TODO: packet number
     let mut cipher = Aes256Ctr::new_var(&enc[..], &[0u8; 16]).expect("length from arrays");
     cipher.apply_keystream(&mut packet[..msg_encrypted_len]);
+    drop(cipher);
 
     let actual_len = usize(BE::read_u32(&packet[message_len..]));
     ensure!(actual_len != 0 && actual_len <= 1024, "invalid len");
-    ensure!(packet[actual_len..message_len].iter().all(|&x| 0 == x), "invalid padding");
+    ensure!(
+        packet[actual_len..message_len].iter().all(|&x| 0 == x),
+        "invalid padding"
+    );
 
     let msg = &packet[..actual_len];
     to.write_buffer.extend_from_slice(msg);
