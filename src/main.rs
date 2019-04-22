@@ -21,14 +21,22 @@ use mio::net::TcpStream;
 use mio::Token;
 use num_bigint::BigUint;
 
+const PACKET_MAX_MESSAGE_LEN: usize = 1024;
+const PACKET_MESSAGE_LEN_LEN: usize = 4; // u32
+const PACKET_PACKET_NUMBER_LEN: usize = 8; // u64
+const PACKET_MESSAGE_ENCRYPTED_LEN: usize = PACKET_MAX_MESSAGE_LEN + PACKET_MESSAGE_LEN_LEN;
+const PACKET_LEN: usize = PACKET_MESSAGE_ENCRYPTED_LEN + MacResult::BYTES;
+
 #[macro_export]
 macro_rules! named_array {
     ($name:ident, $len:expr) => {
         #[derive(Clone)]
         pub struct $name([u8; $len / 8]);
+
+        #[allow(dead_code)]
         impl $name {
-            const BYTES: usize = $len / 8;
-            const BITS: usize = $len;
+            pub const BYTES: usize = $len / 8;
+            pub const BITS: usize = $len;
 
             pub fn random() -> Result<Self, getrandom::Error> {
                 let mut ret = [0u8; Self::BYTES];
@@ -52,6 +60,10 @@ macro_rules! named_array {
     };
 }
 
+mod crypto;
+
+use crypto::MacResult;
+
 named_array!(MasterKey, 256);
 
 named_array!(Nonce, 256);
@@ -61,10 +73,6 @@ named_array!(YParam, 2048);
 
 named_array!(EncKey, 256);
 named_array!(MacKey, 256);
-
-type Bits256 = [u8; 32];
-
-mod crypto;
 
 fn main() -> Result<(), Error> {
     pretty_env_logger::init();
@@ -286,7 +294,7 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
 
                 let server = decrypt;
 
-                let nonce_len = Bits256::default().len();
+                let nonce_len = Nonce::BYTES;
                 fill_buffer_target(negotiate, nonce_len)?;
                 if negotiate.read_buffer.len() < nonce_len {
                     break;
@@ -354,13 +362,13 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                     &mut conn.output
                 };
 
-                let y_h_len = 256 + Bits256::default().len();
+                let y_h_len = YParam::BYTES + MacResult::BYTES;
                 fill_buffer_target(negotiate, y_h_len)?;
                 if negotiate.read_buffer.len() < y_h_len {
                     break;
                 }
 
-                let their_mac = crypto::MacResult::from_slice(&negotiate.read_buffer[256..][..32]);
+                let their_mac = MacResult::from_slice(&negotiate.read_buffer[256..][..32]);
 
                 let expected_mac = crypto::mac(&their_dh_mac_key, &negotiate.read_buffer[..256]);
                 use subtle::ConstantTimeEq;
@@ -446,32 +454,33 @@ fn encrypt_stream(
     to: &mut Stream,
     packet_number: &mut u64,
 ) -> Result<(), Error> {
-    let message_len = 1024;
-    let len_len = 4;
-    let mac_len = 32;
-    let msg_encrypted_len = message_len + len_len;
-    let packet_len = msg_encrypted_len + mac_len;
-
-    fill_buffer_target(from, message_len)?;
+    fill_buffer_target(from, PACKET_MAX_MESSAGE_LEN)?;
     if from.read_buffer.is_empty() {
         return Ok(());
     }
 
     debug!("encrypt from:{}", from.token.0);
 
-    let data_len = message_len.min(from.read_buffer.len());
+    let data_len = PACKET_MAX_MESSAGE_LEN.min(from.read_buffer.len());
     let input = &from.read_buffer[..data_len];
-    let mut packet = [0u8; 1060];
+    let mut packet = [0u8; PACKET_LEN];
 
     (&mut packet[..data_len]).copy_from_slice(input);
-    BE::write_u32(&mut packet[message_len..], u32(data_len).expect("<1024"));
+    BE::write_u32(
+        &mut packet[PACKET_MAX_MESSAGE_LEN..],
+        u32(data_len).expect("<1024"),
+    );
 
-    BE::write_u64(&mut packet[msg_encrypted_len..], *packet_number);
-    aes_ctr(enc, &mut packet[..msg_encrypted_len], packet_number);
+    BE::write_u64(&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..], *packet_number);
+    aes_ctr(
+        enc,
+        &mut packet[..PACKET_MESSAGE_ENCRYPTED_LEN],
+        packet_number,
+    );
 
-    let data_to_mac = &packet[..msg_encrypted_len + 8];
+    let data_to_mac = &packet[..PACKET_MESSAGE_ENCRYPTED_LEN + PACKET_PACKET_NUMBER_LEN];
     let hash = crypto::mac(mac, data_to_mac);
-    (&mut packet[msg_encrypted_len..]).copy_from_slice(&hash.code());
+    (&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..]).copy_from_slice(&hash.code());
 
     to.write_buffer.extend_from_slice(&packet);
     from.read_buffer.drain(..data_len);
@@ -487,32 +496,26 @@ fn decrypt_stream(
     to: &mut Stream,
     packet_number: &mut u64,
 ) -> Result<(), Error> {
-    let message_len = 1024;
-    let len_len = 4;
-    let mac_len = 32;
-    let msg_encrypted_len = message_len + len_len;
-    let packet_len = msg_encrypted_len + mac_len;
-
-    fill_buffer_target(from, packet_len)?;
-    if from.read_buffer.len() < packet_len {
+    fill_buffer_target(from, PACKET_LEN)?;
+    if from.read_buffer.len() < PACKET_LEN {
         return Ok(());
     }
 
     debug!("decrypt from:{}", from.token.0);
 
-    let packet = &mut from.read_buffer[..packet_len];
+    let packet = &mut from.read_buffer[..PACKET_LEN];
 
     //    msg_padded: [ message ] [ padded up to 1024 bytes ] [ length: 4 bytes ]
     // msg_encrypted: encrypt(msg_padded)
     //       payload: [ msg_encrypted ] [ mac([ msg_encrypted ] [ packet number: 8 bytes ]):
 
     // copy the mac out of the read buffer
-    let mut mac_actual = crypto::MacResult::from_slice(&packet[msg_encrypted_len..]);
+    let mut mac_actual = crypto::MacResult::from_slice(&packet[PACKET_MESSAGE_ENCRYPTED_LEN..]);
 
     // write the packet number into the read_buffer, overwriting part of the mac
-    BE::write_u64(&mut packet[msg_encrypted_len..], *packet_number);
+    BE::write_u64(&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..], *packet_number);
 
-    let data_to_mac = &packet[..msg_encrypted_len + 8];
+    let data_to_mac = &packet[..PACKET_MESSAGE_ENCRYPTED_LEN + PACKET_PACKET_NUMBER_LEN];
     use subtle::ConstantTimeEq;
     ensure!(
         1 == crypto::mac(mac, &data_to_mac)
@@ -521,19 +524,28 @@ fn decrypt_stream(
         "packet mac bad"
     );
 
-    aes_ctr(enc, &mut packet[..msg_encrypted_len], packet_number);
+    aes_ctr(
+        enc,
+        &mut packet[..PACKET_MESSAGE_ENCRYPTED_LEN],
+        packet_number,
+    );
 
-    let actual_len = usize(BE::read_u32(&packet[message_len..]));
-    ensure!(actual_len != 0 && actual_len <= 1024, "invalid len");
+    let actual_len = usize(BE::read_u32(&packet[PACKET_MAX_MESSAGE_LEN..]));
     ensure!(
-        packet[actual_len..message_len].iter().all(|&x| 0 == x),
+        actual_len != 0 && actual_len <= PACKET_MAX_MESSAGE_LEN,
+        "invalid len"
+    );
+    ensure!(
+        packet[actual_len..PACKET_MAX_MESSAGE_LEN]
+            .iter()
+            .all(|&x| 0 == x),
         "invalid padding"
     );
 
     let msg = &packet[..actual_len];
     to.write_buffer.extend_from_slice(msg);
 
-    from.read_buffer.drain(..packet_len);
+    from.read_buffer.drain(..PACKET_LEN);
 
     Ok(())
 }
@@ -556,7 +568,7 @@ fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), io::Erro
 
     while read_buffer.len() < target {
         use std::io::Read;
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 8 * 1024];
         let len = match sock.read(&mut buf).map_non_block()? {
             Some(len) => len,
             None => break,
@@ -678,7 +690,7 @@ impl Stream {
     }
 
     fn reregister(&self, poll: &mio::Poll) -> Result<(), io::Error> {
-        let read = self.read_buffer.len() < 1060;
+        let read = self.read_buffer.len() < PACKET_LEN;
         let write = !self.write_buffer.is_empty();
 
         let mut interest = mio::Ready::empty();
