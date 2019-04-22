@@ -204,6 +204,8 @@ fn main() -> Result<(), Error> {
                 client => {
                     if let Some(conn) = server.clients.get_mut(&round_down(client)) {
                         duplify(key, decrypt, conn)?;
+                        conn.input.reregister(&poll)?;
+                        conn.output.reregister(&poll)?;
                     }
                 }
             }
@@ -592,13 +594,30 @@ impl Stream {
         }
     }
 
-    fn initial_registration(&self, poll: &mio::Poll) -> Result<(), io::Error> {
+    fn initial_registration(&mut self, poll: &mio::Poll) -> Result<(), io::Error> {
         poll.register(
             &self.inner,
             self.token,
-            mio::Ready::readable(),
+            mio::Ready::empty(),
             mio::PollOpt::edge(),
         )
+    }
+
+    fn reregister(&self, poll: &mio::Poll) -> Result<(), io::Error> {
+        let read = self.read_buffer.len() < 1060;
+        let write = !self.write_buffer.is_empty();
+
+        let mut interest = mio::Ready::empty();
+
+        if read {
+            interest |= mio::Ready::readable();
+        }
+
+        if write {
+            interest |= mio::Ready::writable();
+        }
+
+        poll.reregister(&self.inner, self.token, interest, mio::PollOpt::edge())
     }
 }
 
