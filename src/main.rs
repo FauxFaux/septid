@@ -15,11 +15,11 @@ use failure::ensure;
 use failure::err_msg;
 use failure::Error;
 use failure::ResultExt;
+use getrandom::getrandom;
 use mio::net::TcpListener;
 use mio::net::TcpStream;
 use mio::Token;
 use num_bigint::BigUint;
-use ring::rand::SecureRandom;
 
 type Bits256 = [u8; 32];
 type Bits2048 = [u8; 256];
@@ -85,9 +85,7 @@ fn main() -> Result<(), Error> {
 
     assert!(!matches.opt_present("u"), "-u unsupported");
 
-    let mut rng = ring::rand::SystemRandom::new();
-    rng.fill(&mut [0u8; 1])
-        .with_context(|_| err_msg("paranoid random number warm-up"))?;
+    getrandom(&mut [0u8; 1])?;
 
     let mut server = Server {
         encrypt,
@@ -152,7 +150,7 @@ fn main() -> Result<(), Error> {
                     let out_token = Token(next_token);
                     next_token = next_token.checked_add(1).unwrap();
 
-                    let our_nonce = rand256(&mut rng)?;
+                    let our_nonce = rand256()?;
 
                     let mut input = Stream::new(input, in_token);
                     input.initial_registration(&poll)?;
@@ -176,8 +174,8 @@ fn main() -> Result<(), Error> {
                             packet_number_recv: 0,
                             packet_number_send: 0,
                             crypto: Crypto::NonceSent {
-                                    our_nonce,
-                                    our_x: rand256(&mut rng)?,
+                                our_nonce,
+                                our_x: rand256()?,
                             },
                         },
                     );
@@ -483,7 +481,7 @@ fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), io::Erro
 
         let buf = &buf[..len];
         if buf.is_empty() {
-            return Err(io::ErrorKind::UnexpectedEof.into())
+            return Err(io::ErrorKind::UnexpectedEof.into());
         }
         read_buffer.extend_from_slice(buf);
     }
@@ -604,9 +602,9 @@ impl Stream {
     }
 }
 
-fn rand256(rng: &mut ring::rand::SystemRandom) -> Result<Bits256, Error> {
+fn rand256() -> Result<Bits256, Error> {
     let mut ret = Bits256::default();
-    rng.fill(&mut ret)?;
+    getrandom(&mut ret)?;
     Ok(ret)
 }
 

@@ -11,8 +11,8 @@ cast = "0.2"
 crypto-mac = "0.7"
 digest = "0.8"
 getopts = "0.2"
+getrandom = "0.1"
 mio = "0.6"
-ring = "0.14"
 sha2 = "0.8"
 hmac = "0.7"
 num-bigint = "0.2"
@@ -35,6 +35,7 @@ features = ["mio-support"]
 version = "0.1"
 
 [dependencies.zeroize]
+default-features = false
 # features -= zeroize_derive (buggy in 0.6)
 features = ["std"]
 version = "0.6"
