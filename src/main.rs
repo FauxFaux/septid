@@ -16,6 +16,9 @@ use failure::err_msg;
 use failure::Error;
 use failure::ResultExt;
 use getrandom::getrandom;
+use log::debug;
+use log::info;
+use log::warn;
 use mio::net::TcpListener;
 use mio::net::TcpStream;
 use mio::Token;
@@ -27,6 +30,7 @@ type Bits2048 = [u8; 256];
 mod crypto;
 
 fn main() -> Result<(), Error> {
+    pretty_env_logger::init();
     let mut args = env::args();
     let us = args.next().unwrap_or_else(String::new);
     let mut opts = getopts::Options::new();
@@ -133,7 +137,7 @@ fn main() -> Result<(), Error> {
                         None => continue,
                     };
 
-                    let (input, _) = source.accept()?;
+                    let (input, from) = source.accept()?;
                     let addr = {
                         use std::net::ToSocketAddrs;
                         server
@@ -158,6 +162,11 @@ fn main() -> Result<(), Error> {
                     let mut output = Stream::new(output, out_token);
                     output.initial_registration(&poll)?;
 
+                    debug!(
+                        "connection in:{} out:{} addr:{}",
+                        in_token.0, out_token.0, from
+                    );
+
                     if encrypt {
                         output.write_buffer.extend_from_slice(&our_nonce);
                         flush_buffer(&mut output)?;
@@ -165,6 +174,9 @@ fn main() -> Result<(), Error> {
                         input.write_buffer.extend_from_slice(&our_nonce);
                         flush_buffer(&mut input)?;
                     }
+
+                    input.reregister(&poll)?;
+                    output.reregister(&poll)?;
 
                     server.clients.insert(
                         in_token,
@@ -202,6 +214,7 @@ fn main() -> Result<(), Error> {
                     }
                 }
                 client => {
+                    debug!("event client:{}", client.0);
                     if let Some(conn) = server.clients.get_mut(&round_down(client)) {
                         duplify(key, decrypt, conn)?;
                         conn.input.reregister(&poll)?;
@@ -284,6 +297,8 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                     crypto::mac(&if server { dh_mac_server } else { dh_mac_client }, &our_y);
                 negotiate.write_buffer.extend_from_slice(&y_mac);
 
+                debug!("nonce-sent client:{}", negotiate.token.0);
+
                 conn.crypto = Crypto::NonceReceived {
                     nonces,
                     our_x,
@@ -333,6 +348,8 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 let server = two_keys(&quad_dk[..64]);
                 let client = two_keys(&quad_dk[64..]);
 
+                debug!("keys-agreed client:{}", negotiate.token.0);
+
                 conn.crypto = if decrypt {
                     Crypto::Done {
                         ours: server,
@@ -356,6 +373,7 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                     encrypt_stream(theirs, &mut conn.input, &mut conn.output)?;
                     decrypt_stream(ours, &mut conn.output, &mut conn.input)?;
                 }
+                break;
             }
         }
     }
@@ -381,6 +399,9 @@ fn encrypt_stream(
     if from.read_buffer.is_empty() {
         return Ok(());
     }
+
+    debug!("encrypt from:{}", from.token.0);
+
     let data_len = message_len.min(from.read_buffer.len());
     let input = &from.read_buffer[..data_len];
     let mut packet = [0u8; 1060];
@@ -403,6 +424,8 @@ fn encrypt_stream(
     to.write_buffer.extend_from_slice(&packet);
     from.read_buffer.drain(..data_len);
 
+    debug!("encrypt-done from:{} len:{}", from.token.0, data_len);
+
     Ok(())
 }
 
@@ -421,6 +444,8 @@ fn decrypt_stream(
     if from.read_buffer.len() < packet_len {
         return Ok(());
     }
+
+    debug!("decrypt from:{}", from.token.0);
 
     let packet = &mut from.read_buffer[..packet_len];
 
