@@ -183,8 +183,8 @@ fn main() -> Result<(), Error> {
                         Conn {
                             input,
                             output,
-                            packet_number_recv: 0,
-                            packet_number_send: 0,
+                            packet_number_encrypt: 0,
+                            packet_number_decrypt: 0,
                             crypto: Crypto::NonceSent {
                                 our_nonce,
                                 our_x: rand256()?,
@@ -367,11 +367,31 @@ fn duplify(key: Bits256, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
                 ref theirs,
             } => {
                 if decrypt {
-                    decrypt_stream(theirs, &mut conn.input, &mut conn.output)?;
-                    encrypt_stream(ours, &mut conn.output, &mut conn.input)?;
+                    decrypt_stream(
+                        theirs,
+                        &mut conn.input,
+                        &mut conn.output,
+                        &mut conn.packet_number_decrypt,
+                    )?;
+                    encrypt_stream(
+                        ours,
+                        &mut conn.output,
+                        &mut conn.input,
+                        &mut conn.packet_number_encrypt,
+                    )?;
                 } else {
-                    encrypt_stream(theirs, &mut conn.input, &mut conn.output)?;
-                    decrypt_stream(ours, &mut conn.output, &mut conn.input)?;
+                    encrypt_stream(
+                        theirs,
+                        &mut conn.input,
+                        &mut conn.output,
+                        &mut conn.packet_number_encrypt,
+                    )?;
+                    decrypt_stream(
+                        ours,
+                        &mut conn.output,
+                        &mut conn.input,
+                        &mut conn.packet_number_decrypt,
+                    )?;
                 }
                 break;
             }
@@ -388,6 +408,7 @@ fn encrypt_stream(
     (enc, mac): &(Bits256, Bits256),
     from: &mut Stream,
     to: &mut Stream,
+    packet_number: &mut u64,
 ) -> Result<(), Error> {
     let message_len = 1024;
     let len_len = 4;
@@ -409,13 +430,8 @@ fn encrypt_stream(
     (&mut packet[..data_len]).copy_from_slice(input);
     BE::write_u32(&mut packet[message_len..], u32(data_len).expect("<1024"));
 
-    // TODO: packet number
-    let mut cipher = Aes256Ctr::new_var(&enc[..], &[0u8; 16]).expect("length from arrays");
-    cipher.apply_keystream(&mut packet[..msg_encrypted_len]);
-    drop(cipher);
-
-    // TODO: packet number
-    BE::write_u64(&mut packet[msg_encrypted_len..], 0);
+    BE::write_u64(&mut packet[msg_encrypted_len..], *packet_number);
+    aes_ctr(enc, &mut packet[..msg_encrypted_len], packet_number);
 
     let data_to_mac = &packet[..msg_encrypted_len + 8];
     let hash = crypto::mac(mac, data_to_mac);
@@ -433,6 +449,7 @@ fn decrypt_stream(
     (enc, mac): &(Bits256, Bits256),
     from: &mut Stream,
     to: &mut Stream,
+    packet_number: &mut u64,
 ) -> Result<(), Error> {
     let message_len = 1024;
     let len_len = 4;
@@ -459,8 +476,7 @@ fn decrypt_stream(
     mac_actual.copy_from_slice(&packet[msg_encrypted_len..]);
 
     // write the packet number into the read_buffer, overwriting part of the mac
-    // TODO: packet number
-    BE::write_u64(&mut packet[msg_encrypted_len..], 0);
+    BE::write_u64(&mut packet[msg_encrypted_len..], *packet_number);
 
     let data_to_mac = &packet[..msg_encrypted_len + 8];
     use subtle::ConstantTimeEq;
@@ -471,10 +487,7 @@ fn decrypt_stream(
         "packet mac bad"
     );
 
-    // TODO: packet number
-    let mut cipher = Aes256Ctr::new_var(&enc[..], &[0u8; 16]).expect("length from arrays");
-    cipher.apply_keystream(&mut packet[..msg_encrypted_len]);
-    drop(cipher);
+    aes_ctr(enc, &mut packet[..msg_encrypted_len], packet_number);
 
     let actual_len = usize(BE::read_u32(&packet[message_len..]));
     ensure!(actual_len != 0 && actual_len <= 1024, "invalid len");
@@ -489,6 +502,15 @@ fn decrypt_stream(
     from.read_buffer.drain(..packet_len);
 
     Ok(())
+}
+
+fn aes_ctr(enc: &Bits256, data: &mut [u8], packet_number: &mut u64) {
+    let mut nonce = [0u8; 16];
+    BE::write_u64(&mut nonce[..8], *packet_number);
+    *packet_number += 1;
+
+    let mut cipher = Aes256Ctr::new_var(&enc[..], &nonce).expect("length from arrays");
+    cipher.apply_keystream(data);
 }
 
 fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), io::Error> {
@@ -580,8 +602,8 @@ struct Server {
 struct Conn {
     input: Stream,
     output: Stream,
-    packet_number_recv: u64,
-    packet_number_send: u64,
+    packet_number_encrypt: u64,
+    packet_number_decrypt: u64,
     crypto: Crypto,
 }
 
