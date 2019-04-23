@@ -21,48 +21,16 @@ use mio::net::TcpStream;
 use mio::Token;
 use num_bigint::BigUint;
 
+mod crypto;
+mod named_array;
+
+use crypto::MacResult;
+
 const PACKET_MAX_MESSAGE_LEN: usize = 1024;
 const PACKET_MESSAGE_LEN_LEN: usize = 4; // u32
 const PACKET_PACKET_NUMBER_LEN: usize = 8; // u64
 const PACKET_MESSAGE_ENCRYPTED_LEN: usize = PACKET_MAX_MESSAGE_LEN + PACKET_MESSAGE_LEN_LEN;
 const PACKET_LEN: usize = PACKET_MESSAGE_ENCRYPTED_LEN + MacResult::BYTES;
-
-#[macro_export]
-macro_rules! named_array {
-    ($name:ident, $len:expr) => {
-        #[derive(Clone)]
-        pub struct $name([u8; $len / 8]);
-
-        #[allow(dead_code)]
-        impl $name {
-            pub const BYTES: usize = $len / 8;
-            pub const BITS: usize = $len;
-
-            pub fn random() -> Result<Self, getrandom::Error> {
-                let mut ret = [0u8; Self::BYTES];
-                getrandom::getrandom(&mut ret)?;
-                Ok(Self(ret))
-            }
-
-            pub fn from_slice(data: &[u8]) -> Self {
-                let mut ret = [0u8; Self::BYTES];
-                ret.copy_from_slice(data);
-                Self(ret)
-            }
-        }
-
-        impl Drop for $name {
-            fn drop(&mut self) {
-                use zeroize::Zeroize;
-                (&mut self.0[..]).zeroize()
-            }
-        }
-    };
-}
-
-mod crypto;
-
-use crypto::MacResult;
 
 named_array!(MasterKey, 256);
 
@@ -510,7 +478,7 @@ fn decrypt_stream(
     //       payload: [ msg_encrypted ] [ mac([ msg_encrypted ] [ packet number: 8 bytes ]):
 
     // copy the mac out of the read buffer
-    let mut mac_actual = crypto::MacResult::from_slice(&packet[PACKET_MESSAGE_ENCRYPTED_LEN..]);
+    let mac_actual = crypto::MacResult::from_slice(&packet[PACKET_MESSAGE_ENCRYPTED_LEN..]);
 
     // write the packet number into the read_buffer, overwriting part of the mac
     BE::write_u64(&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..], *packet_number);

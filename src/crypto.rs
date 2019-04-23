@@ -4,6 +4,8 @@ use sha2::Sha256;
 use subtle::Choice;
 use subtle::ConstantTimeEq;
 
+use super::named_array;
+
 // TODO: maybe don't use the macro, so we don't pay the drop cost
 named_array!(MacResult, 256);
 
