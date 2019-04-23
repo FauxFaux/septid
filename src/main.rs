@@ -569,9 +569,10 @@ fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), io::Erro
     while read_buffer.len() < target {
         use std::io::Read;
         let mut buf = [0u8; 8 * 1024];
-        let len = match sock.read(&mut buf).map_non_block()? {
-            Some(len) => len,
-            None => break,
+        let len = match sock.read(&mut buf) {
+            Ok(len) => len,
+            Err(ref e) if io::ErrorKind::WouldBlock == e.kind() => break,
+            Err(e) => return Err(e),
         };
 
         let buf = &buf[..len];
@@ -597,7 +598,12 @@ fn flush_buffer(stream: &mut Stream) -> Result<(), io::Error> {
 
     use std::io::Write;
 
-    while let Some(len) = sock.write(buf).map_non_block()? {
+    loop {
+        let len = match sock.write(buf) {
+            Ok(len) => len,
+            Err(ref e) if io::ErrorKind::WouldBlock == e.kind() => break,
+            Err(e) => return Err(e),
+        };
         if len == buf.len() {
             buf.truncate(0);
             break;
@@ -704,29 +710,5 @@ impl Stream {
         }
 
         poll.reregister(&self.inner, self.token, interest, mio::PollOpt::edge())
-    }
-}
-
-/// A helper trait to provide the map_non_block function on Results.
-pub trait MapNonBlock<T> {
-    /// Maps a `Result<T>` to a `Result<Option<T>>` by converting
-    /// operation-would-block errors into `Ok(None)`.
-    fn map_non_block(self) -> io::Result<Option<T>>;
-}
-
-impl<T> MapNonBlock<T> for io::Result<T> {
-    fn map_non_block(self) -> io::Result<Option<T>> {
-        use std::io::ErrorKind::WouldBlock;
-
-        match self {
-            Ok(value) => Ok(Some(value)),
-            Err(err) => {
-                if let WouldBlock = err.kind() {
-                    Ok(None)
-                } else {
-                    Err(err)
-                }
-            }
-        }
     }
 }
