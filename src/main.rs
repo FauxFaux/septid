@@ -4,13 +4,6 @@ use std::fs;
 use std::io;
 use std::mem;
 
-use aes_ctr::stream_cipher::NewStreamCipher;
-use aes_ctr::stream_cipher::SyncStreamCipher;
-use aes_ctr::Aes256Ctr;
-use byteorder::ByteOrder;
-use byteorder::BE;
-use cast::u32;
-use cast::usize;
 use failure::ensure;
 use failure::err_msg;
 use failure::Error;
@@ -23,14 +16,9 @@ use num_bigint::BigUint;
 
 mod crypto;
 mod named_array;
+mod stream;
 
 use crypto::MacResult;
-
-const PACKET_MAX_MESSAGE_LEN: usize = 1024;
-const PACKET_MESSAGE_LEN_LEN: usize = 4; // u32
-const PACKET_PACKET_NUMBER_LEN: usize = 8; // u64
-const PACKET_MESSAGE_ENCRYPTED_LEN: usize = PACKET_MAX_MESSAGE_LEN + PACKET_MESSAGE_LEN_LEN;
-const PACKET_LEN: usize = PACKET_MESSAGE_ENCRYPTED_LEN + MacResult::BYTES;
 
 named_array!(MasterKey, 256);
 
@@ -168,10 +156,10 @@ fn main() -> Result<(), Error> {
 
                     let our_nonce = Nonce::random()?;
 
-                    let mut input = Stream::new(input, in_token);
+                    let mut input = stream::Stream::new(input, in_token);
                     input.initial_registration(&poll)?;
 
-                    let mut output = Stream::new(output, out_token);
+                    let mut output = stream::Stream::new(output, out_token);
                     output.initial_registration(&poll)?;
 
                     debug!(
@@ -181,10 +169,10 @@ fn main() -> Result<(), Error> {
 
                     if encrypt {
                         output.write_buffer.extend_from_slice(&our_nonce.0);
-                        flush_buffer(&mut output)?;
+                        stream::flush_buffer(&mut output)?;
                     } else {
                         input.write_buffer.extend_from_slice(&our_nonce.0);
-                        flush_buffer(&mut input)?;
+                        stream::flush_buffer(&mut input)?;
                     }
 
                     input.reregister(&poll)?;
@@ -248,8 +236,8 @@ fn round_down(value: Token) -> Token {
 }
 
 fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
-    flush_buffer(&mut conn.input)?;
-    flush_buffer(&mut conn.output)?;
+    stream::flush_buffer(&mut conn.input)?;
+    stream::flush_buffer(&mut conn.output)?;
 
     loop {
         match &conn.crypto {
@@ -263,7 +251,7 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 let server = decrypt;
 
                 let nonce_len = Nonce::BYTES;
-                fill_buffer_target(negotiate, nonce_len)?;
+                stream::fill_buffer_target(negotiate, nonce_len)?;
                 if negotiate.read_buffer.len() < nonce_len {
                     break;
                 }
@@ -331,7 +319,7 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 };
 
                 let y_h_len = YParam::BYTES + MacResult::BYTES;
-                fill_buffer_target(negotiate, y_h_len)?;
+                stream::fill_buffer_target(negotiate, y_h_len)?;
                 if negotiate.read_buffer.len() < y_h_len {
                     break;
                 }
@@ -379,26 +367,26 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
             }
             Crypto::Done { ours, theirs } => {
                 if decrypt {
-                    decrypt_stream(
+                    stream::decrypt_stream(
                         theirs,
                         &mut conn.input,
                         &mut conn.output,
                         &mut conn.packet_number_decrypt,
                     )?;
-                    encrypt_stream(
+                    stream::encrypt_stream(
                         ours,
                         &mut conn.output,
                         &mut conn.input,
                         &mut conn.packet_number_encrypt,
                     )?;
                 } else {
-                    encrypt_stream(
+                    stream::encrypt_stream(
                         theirs,
                         &mut conn.input,
                         &mut conn.output,
                         &mut conn.packet_number_encrypt,
                     )?;
-                    decrypt_stream(
+                    stream::decrypt_stream(
                         ours,
                         &mut conn.output,
                         &mut conn.input,
@@ -410,179 +398,8 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
         }
     }
 
-    flush_buffer(&mut conn.input)?;
-    flush_buffer(&mut conn.output)?;
-
-    Ok(())
-}
-
-fn encrypt_stream(
-    (enc, mac): &(EncKey, MacKey),
-    from: &mut Stream,
-    to: &mut Stream,
-    packet_number: &mut u64,
-) -> Result<(), Error> {
-    fill_buffer_target(from, PACKET_MAX_MESSAGE_LEN)?;
-    if from.read_buffer.is_empty() {
-        return Ok(());
-    }
-
-    debug!("encrypt from:{}", from.token.0);
-
-    let data_len = PACKET_MAX_MESSAGE_LEN.min(from.read_buffer.len());
-    let input = &from.read_buffer[..data_len];
-    let mut packet = [0u8; PACKET_LEN];
-
-    (&mut packet[..data_len]).copy_from_slice(input);
-    BE::write_u32(
-        &mut packet[PACKET_MAX_MESSAGE_LEN..],
-        u32(data_len).expect("<1024"),
-    );
-
-    BE::write_u64(&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..], *packet_number);
-    aes_ctr(
-        enc,
-        &mut packet[..PACKET_MESSAGE_ENCRYPTED_LEN],
-        packet_number,
-    );
-
-    let data_to_mac = &packet[..PACKET_MESSAGE_ENCRYPTED_LEN + PACKET_PACKET_NUMBER_LEN];
-    let hash = crypto::mac(mac, data_to_mac);
-    (&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..]).copy_from_slice(&hash.code());
-
-    to.write_buffer.extend_from_slice(&packet);
-    from.read_buffer.drain(..data_len);
-
-    debug!("encrypt-done from:{} len:{}", from.token.0, data_len);
-
-    Ok(())
-}
-
-fn decrypt_stream(
-    (enc, mac): &(EncKey, MacKey),
-    from: &mut Stream,
-    to: &mut Stream,
-    packet_number: &mut u64,
-) -> Result<(), Error> {
-    fill_buffer_target(from, PACKET_LEN)?;
-    if from.read_buffer.len() < PACKET_LEN {
-        return Ok(());
-    }
-
-    debug!("decrypt from:{}", from.token.0);
-
-    let packet = &mut from.read_buffer[..PACKET_LEN];
-
-    //    msg_padded: [ message ] [ padded up to 1024 bytes ] [ length: 4 bytes ]
-    // msg_encrypted: encrypt(msg_padded)
-    //       payload: [ msg_encrypted ] [ mac([ msg_encrypted ] [ packet number: 8 bytes ]):
-
-    // copy the mac out of the read buffer
-    let mac_actual = crypto::MacResult::from_slice(&packet[PACKET_MESSAGE_ENCRYPTED_LEN..]);
-
-    // write the packet number into the read_buffer, overwriting part of the mac
-    BE::write_u64(&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..], *packet_number);
-
-    let data_to_mac = &packet[..PACKET_MESSAGE_ENCRYPTED_LEN + PACKET_PACKET_NUMBER_LEN];
-    use subtle::ConstantTimeEq;
-    ensure!(
-        1 == crypto::mac(mac, &data_to_mac)
-            .ct_eq(&mac_actual)
-            .unwrap_u8(),
-        "packet mac bad"
-    );
-
-    aes_ctr(
-        enc,
-        &mut packet[..PACKET_MESSAGE_ENCRYPTED_LEN],
-        packet_number,
-    );
-
-    let actual_len = usize(BE::read_u32(&packet[PACKET_MAX_MESSAGE_LEN..]));
-    ensure!(
-        actual_len != 0 && actual_len <= PACKET_MAX_MESSAGE_LEN,
-        "invalid len"
-    );
-    ensure!(
-        packet[actual_len..PACKET_MAX_MESSAGE_LEN]
-            .iter()
-            .all(|&x| 0 == x),
-        "invalid padding"
-    );
-
-    let msg = &packet[..actual_len];
-    to.write_buffer.extend_from_slice(msg);
-
-    from.read_buffer.drain(..PACKET_LEN);
-
-    Ok(())
-}
-
-fn aes_ctr(enc: &EncKey, data: &mut [u8], packet_number: &mut u64) {
-    let mut nonce = [0u8; 16];
-    BE::write_u64(&mut nonce[..8], *packet_number);
-    *packet_number += 1;
-
-    let mut cipher = Aes256Ctr::new_var(&enc.0[..], &nonce).expect("length from arrays");
-    cipher.apply_keystream(data);
-}
-
-fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), io::Error> {
-    let Stream {
-        read_buffer,
-        inner: sock,
-        ..
-    } = stream;
-
-    while read_buffer.len() < target {
-        use std::io::Read;
-        let mut buf = [0u8; 8 * 1024];
-        let len = match sock.read(&mut buf) {
-            Ok(len) => len,
-            Err(ref e) if io::ErrorKind::WouldBlock == e.kind() => break,
-            Err(e) => return Err(e),
-        };
-
-        let buf = &buf[..len];
-        if buf.is_empty() {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        read_buffer.extend_from_slice(buf);
-    }
-
-    Ok(())
-}
-
-fn flush_buffer(stream: &mut Stream) -> Result<(), io::Error> {
-    let Stream {
-        write_buffer: buf,
-        inner: sock,
-        ..
-    } = stream;
-
-    if buf.is_empty() {
-        return Ok(());
-    }
-
-    use std::io::Write;
-
-    loop {
-        let len = match sock.write(buf) {
-            Ok(len) => len,
-            Err(ref e) if io::ErrorKind::WouldBlock == e.kind() => break,
-            Err(e) => return Err(e),
-        };
-        if len == buf.len() {
-            buf.truncate(0);
-            break;
-        }
-
-        if 0 == len {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-
-        buf.drain(..len);
-    }
+    stream::flush_buffer(&mut conn.input)?;
+    stream::flush_buffer(&mut conn.output)?;
 
     Ok(())
 }
@@ -613,18 +430,11 @@ struct Server {
 }
 
 struct Conn {
-    input: Stream,
-    output: Stream,
+    input: stream::Stream,
+    output: stream::Stream,
     packet_number_encrypt: u64,
     packet_number_decrypt: u64,
     crypto: Crypto,
-}
-
-struct Stream {
-    inner: TcpStream,
-    token: mio::Token,
-    read_buffer: Vec<u8>,
-    write_buffer: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -642,41 +452,4 @@ enum Crypto {
         ours: (EncKey, MacKey),
         theirs: (EncKey, MacKey),
     },
-}
-
-impl Stream {
-    fn new(inner: TcpStream, token: mio::Token) -> Stream {
-        Stream {
-            inner,
-            token,
-            read_buffer: Vec::new(),
-            write_buffer: Vec::new(),
-        }
-    }
-
-    fn initial_registration(&mut self, poll: &mio::Poll) -> Result<(), io::Error> {
-        poll.register(
-            &self.inner,
-            self.token,
-            mio::Ready::empty(),
-            mio::PollOpt::edge(),
-        )
-    }
-
-    fn reregister(&self, poll: &mio::Poll) -> Result<(), io::Error> {
-        let read = self.read_buffer.len() < PACKET_LEN;
-        let write = !self.write_buffer.is_empty();
-
-        let mut interest = mio::Ready::empty();
-
-        if read {
-            interest |= mio::Ready::readable();
-        }
-
-        if write {
-            interest |= mio::Ready::writable();
-        }
-
-        poll.reregister(&self.inner, self.token, interest, mio::PollOpt::edge())
-    }
 }
