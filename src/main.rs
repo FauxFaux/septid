@@ -1,3 +1,6 @@
+// efficiency, could copy instead
+#![feature(vec_drain_as_slice)]
+
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -265,22 +268,25 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 let negotiate = &mut conn.encrypted;
 
                 let y_h_len = YParam::BYTES + MacResult::BYTES;
-                stream::fill_buffer_target(negotiate, y_h_len)?;
-                if negotiate.read_buffer.len() < y_h_len {
-                    break;
-                }
+                let y_h = match negotiate.read_exact(y_h_len)? {
+                    Some(y_h) => y_h,
+                    None => break,
+                };
 
-                let their_mac = MacResult::from_slice(&negotiate.read_buffer[256..][..32]);
+                let (their_mac, their_y) = y_h.split_at(YParam::BYTES);
 
-                let expected_mac = crypto::mac(&their_dh_mac_key, &negotiate.read_buffer[..256]);
+                let their_mac = MacResult::from_slice(their_mac);
+
+                let expected_mac = crypto::mac(&their_dh_mac_key, their_y);
                 use subtle::ConstantTimeEq;
                 ensure!(expected_mac.ct_eq(&their_mac).unwrap_u8() == 1, "bad mac");
 
-                let their_y = BigUint::from_bytes_be(&negotiate.read_buffer[..256]);
+                let their_y = BigUint::from_bytes_be(their_y);
                 let prime = BigUint::from_bytes_be(&crypto::GROUP_14_PRIME.0);
                 ensure!(their_y < prime, "bad y");
 
-                drop(negotiate.read_buffer.drain(..256 + 32));
+                // BORROW CHECKER
+                drop(y_h);
 
                 let shared = their_y
                     .modpow(&BigUint::from_bytes_be(&our_x.0), &prime)
@@ -342,14 +348,10 @@ fn reply_with_y(
     our_nonce: &Nonce,
     our_x: &XParam,
 ) -> Result<Option<(BothNonces, MacKey)>, Error> {
-    let nonce_len = Nonce::BYTES;
-    stream::fill_buffer_target(negotiate, nonce_len)?;
-    if negotiate.read_buffer.len() < nonce_len {
-        return Ok(None);
-    }
-
-    let other_nonce = Nonce::from_slice(&negotiate.read_buffer[..nonce_len]);
-    drop(negotiate.read_buffer.drain(..nonce_len));
+    let other_nonce = match negotiate.read_exact(Nonce::BYTES)? {
+        Some(nonce) => Nonce::from_slice(&nonce),
+        None => return Ok(None),
+    };
 
     let (client_nonce, server_nonce) = if decrypt {
         (&other_nonce, our_nonce)
@@ -361,6 +363,9 @@ fn reply_with_y(
     nonces[..32].copy_from_slice(&client_nonce.0);
     nonces[32..].copy_from_slice(&server_nonce.0);
     let nonces = BothNonces(nonces);
+
+    // not important
+    drop(other_nonce);
 
     let mut double_dk = [0u8; 32 * 2];
     pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &nonces.0, 1, &mut double_dk);

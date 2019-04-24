@@ -1,4 +1,6 @@
 use std::io;
+use std::ops;
+use std::vec;
 
 use aes_ctr::stream_cipher::NewStreamCipher;
 use aes_ctr::stream_cipher::SyncStreamCipher;
@@ -134,7 +136,7 @@ fn aes_ctr(enc: &EncKey, data: &mut [u8], packet_number: &mut u64) {
     cipher.apply_keystream(data);
 }
 
-pub fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), io::Error> {
+fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), io::Error> {
     let Stream {
         read_buffer,
         inner: sock,
@@ -235,5 +237,28 @@ impl Stream {
         }
 
         poll.reregister(&self.inner, self.token, interest, mio::PollOpt::edge())
+    }
+
+    pub fn read_exact(&mut self, len: usize) -> Result<Option<ReadResult>, io::Error> {
+        fill_buffer_target(self, len)?;
+        if self.read_buffer.len() < len {
+            return Ok(None);
+        }
+
+        Ok(Some(ReadResult {
+            inner: self.read_buffer.drain(..len),
+        }))
+    }
+}
+
+pub struct ReadResult<'v> {
+    inner: vec::Drain<'v, u8>,
+}
+
+impl<'v> ops::Deref for ReadResult<'v> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.inner.as_slice()
     }
 }
