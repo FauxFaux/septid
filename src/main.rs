@@ -33,6 +33,8 @@ named_array!(YParam, 2048);
 named_array!(EncKey, 256);
 named_array!(MacKey, 256);
 
+const Y_H_LEN: usize = YParam::BYTES + MacResult::BYTES;
+
 fn main() -> Result<(), Error> {
     pretty_env_logger::init();
     let mut args = env::args();
@@ -246,13 +248,15 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
     loop {
         match &conn.crypto {
             Crypto::NonceSent { our_nonce, our_x } => {
-                let negotiate = &mut conn.encrypted;
+                let other_nonce = match conn.encrypted.read_exact(Nonce::BYTES)? {
+                    Some(nonce) => Nonce::from_slice(&nonce),
+                    None => break,
+                };
 
-                let (nonces, their_dh_mac_key) =
-                    match reply_with_y(key, negotiate, decrypt, our_nonce, our_x)? {
-                        Some(pair) => pair,
-                        None => break,
-                    };
+                let (response, nonces, their_dh_mac_key) =
+                    generate_y_reply(key, &other_nonce, decrypt, our_nonce, our_x)?;
+
+                conn.encrypted.write_buffer.extend_from_slice(&response);
 
                 conn.crypto = Crypto::NonceReceived {
                     nonces,
@@ -265,10 +269,7 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 our_x,
                 their_dh_mac_key,
             } => {
-                let y_h = match conn
-                    .encrypted
-                    .read_exact(YParam::BYTES + MacResult::BYTES)?
-                {
+                let y_h = match conn.encrypted.read_exact(Y_H_LEN)? {
                     Some(y_h) => y_h,
                     None => break,
                 };
@@ -311,31 +312,23 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
     Ok(())
 }
 
-fn reply_with_y(
+fn generate_y_reply(
     key: &MasterKey,
-    negotiate: &mut stream::Stream,
+    other_nonce: &Nonce,
     decrypt: bool,
     our_nonce: &Nonce,
     our_x: &XParam,
-) -> Result<Option<(BothNonces, MacKey)>, Error> {
-    let other_nonce = match negotiate.read_exact(Nonce::BYTES)? {
-        Some(nonce) => Nonce::from_slice(&nonce),
-        None => return Ok(None),
-    };
-
+) -> Result<([u8; Y_H_LEN], BothNonces, MacKey), Error> {
     let (client_nonce, server_nonce) = if decrypt {
-        (&other_nonce, our_nonce)
+        (other_nonce, our_nonce)
     } else {
-        (our_nonce, &other_nonce)
+        (our_nonce, other_nonce)
     };
 
     let mut nonces = [0u8; BothNonces::BYTES];
     nonces[..32].copy_from_slice(&client_nonce.0);
     nonces[32..].copy_from_slice(&server_nonce.0);
     let nonces = BothNonces(nonces);
-
-    // not important
-    drop(other_nonce);
 
     let mut double_dk = [0u8; 32 * 2];
     pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &nonces.0, 1, &mut double_dk);
@@ -353,9 +346,7 @@ fn reply_with_y(
 
     // TODO: pad to length
     let our_y = our_y.to_bytes_be();
-    assert_eq!(256, our_y.len(), "short y");
-
-    negotiate.write_buffer.extend_from_slice(&our_y);
+    assert_eq!(YParam::BYTES, our_y.len(), "short y");
 
     let y_mac = crypto::mac(
         if decrypt {
@@ -365,9 +356,11 @@ fn reply_with_y(
         },
         &our_y,
     );
-    negotiate.write_buffer.extend_from_slice(&y_mac.code());
 
-    debug!("nonce-sent client:{}", negotiate.token.0);
+    let mut response = [0u8; Y_H_LEN];
+
+    response[..YParam::BYTES].copy_from_slice(&our_y);
+    response[YParam::BYTES..].copy_from_slice(&y_mac.code());
 
     let their_dh_mac_key = if decrypt {
         dh_mac_client
@@ -375,7 +368,7 @@ fn reply_with_y(
         dh_mac_server
     };
 
-    Ok(Some((nonces, their_dh_mac_key)))
+    Ok((response, nonces, their_dh_mac_key))
 }
 
 fn y_h_to_keys(
@@ -385,7 +378,7 @@ fn y_h_to_keys(
     nonces: &BothNonces,
     y_h: &[u8],
 ) -> Result<((EncKey, MacKey), (EncKey, MacKey)), Error> {
-    let (their_mac, their_y) = y_h.split_at(YParam::BYTES);
+    let (their_y, their_mac) = y_h.split_at(YParam::BYTES);
 
     let their_mac = MacResult::from_slice(their_mac);
 
