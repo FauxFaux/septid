@@ -245,64 +245,16 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
             Crypto::NonceSent { our_nonce, our_x } => {
                 let negotiate = &mut conn.encrypted;
 
-                let server = decrypt;
-
-                let nonce_len = Nonce::BYTES;
-                stream::fill_buffer_target(negotiate, nonce_len)?;
-                if negotiate.read_buffer.len() < nonce_len {
-                    break;
-                }
-
-                let other_nonce = Nonce::from_slice(&negotiate.read_buffer[..nonce_len]);
-                drop(negotiate.read_buffer.drain(..nonce_len));
-
-                let (client_nonce, server_nonce) = if decrypt {
-                    (&other_nonce, our_nonce)
-                } else {
-                    (our_nonce, &other_nonce)
-                };
-
-                let mut nonces = [0u8; BothNonces::BYTES];
-                nonces[..32].copy_from_slice(&client_nonce.0);
-                nonces[32..].copy_from_slice(&server_nonce.0);
-                let nonces = BothNonces(nonces);
-
-                let mut double_dk = [0u8; 32 * 2];
-                pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &nonces.0, 1, &mut double_dk);
-
-                let dh_mac_client = MacKey::from_slice(&double_dk[..32]);
-                let dh_mac_server = MacKey::from_slice(&double_dk[32..]);
-
-                let two = BigUint::from(2u8);
-
-                // TODO: constant time
-                let our_y = two.modpow(
-                    &BigUint::from_bytes_be(&our_x.0),
-                    &BigUint::from_bytes_be(&crypto::GROUP_14_PRIME.0),
-                );
-
-                // TODO: pad to length
-                let our_y = our_y.to_bytes_be();
-                assert_eq!(256, our_y.len(), "short y");
-
-                negotiate.write_buffer.extend_from_slice(&our_y);
-
-                let y_mac = crypto::mac(
-                    if server {
-                        &dh_mac_server
-                    } else {
-                        &dh_mac_client
-                    },
-                    &our_y,
-                );
-                negotiate.write_buffer.extend_from_slice(&y_mac.code());
-
-                debug!("nonce-sent client:{}", negotiate.token.0);
+                let (nonces, their_dh_mac_key) =
+                    match reply_with_y(key, negotiate, decrypt, our_nonce, our_x)? {
+                        Some(pair) => pair,
+                        None => break,
+                    };
 
                 conn.crypto = Crypto::NonceReceived {
                     nonces,
                     our_x: our_x.clone(),
-                    their_dh_mac_key: if server { dh_mac_client } else { dh_mac_server },
+                    their_dh_mac_key,
                 };
             }
             Crypto::NonceReceived {
@@ -381,6 +333,74 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
     stream::flush_buffer(&mut conn.plain)?;
 
     Ok(())
+}
+
+fn reply_with_y(
+    key: &MasterKey,
+    negotiate: &mut stream::Stream,
+    decrypt: bool,
+    our_nonce: &Nonce,
+    our_x: &XParam,
+) -> Result<Option<(BothNonces, MacKey)>, Error> {
+    let nonce_len = Nonce::BYTES;
+    stream::fill_buffer_target(negotiate, nonce_len)?;
+    if negotiate.read_buffer.len() < nonce_len {
+        return Ok(None);
+    }
+
+    let other_nonce = Nonce::from_slice(&negotiate.read_buffer[..nonce_len]);
+    drop(negotiate.read_buffer.drain(..nonce_len));
+
+    let (client_nonce, server_nonce) = if decrypt {
+        (&other_nonce, our_nonce)
+    } else {
+        (our_nonce, &other_nonce)
+    };
+
+    let mut nonces = [0u8; BothNonces::BYTES];
+    nonces[..32].copy_from_slice(&client_nonce.0);
+    nonces[32..].copy_from_slice(&server_nonce.0);
+    let nonces = BothNonces(nonces);
+
+    let mut double_dk = [0u8; 32 * 2];
+    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &nonces.0, 1, &mut double_dk);
+
+    let dh_mac_client = MacKey::from_slice(&double_dk[..32]);
+    let dh_mac_server = MacKey::from_slice(&double_dk[32..]);
+
+    let two = BigUint::from(2u8);
+
+    // TODO: constant time
+    let our_y = two.modpow(
+        &BigUint::from_bytes_be(&our_x.0),
+        &BigUint::from_bytes_be(&crypto::GROUP_14_PRIME.0),
+    );
+
+    // TODO: pad to length
+    let our_y = our_y.to_bytes_be();
+    assert_eq!(256, our_y.len(), "short y");
+
+    negotiate.write_buffer.extend_from_slice(&our_y);
+
+    let y_mac = crypto::mac(
+        if decrypt {
+            &dh_mac_server
+        } else {
+            &dh_mac_client
+        },
+        &our_y,
+    );
+    negotiate.write_buffer.extend_from_slice(&y_mac.code());
+
+    debug!("nonce-sent client:{}", negotiate.token.0);
+
+    let their_dh_mac_key = if decrypt {
+        dh_mac_client
+    } else {
+        dh_mac_server
+    };
+
+    Ok(Some((nonces, their_dh_mac_key)))
 }
 
 fn load_key(from: &str) -> Result<MasterKey, Error> {
