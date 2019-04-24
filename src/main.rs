@@ -137,7 +137,7 @@ fn main() -> Result<(), Error> {
                         None => continue,
                     };
 
-                    let (input, from) = source.accept()?;
+                    let (accepted, from) = source.accept()?;
                     let addr = {
                         use std::net::ToSocketAddrs;
                         server
@@ -147,42 +147,43 @@ fn main() -> Result<(), Error> {
                             .ok_or_else(|| err_msg("no resolution"))?
                     };
 
-                    let output = TcpStream::connect(&addr)?;
+                    let initiated = TcpStream::connect(&addr)?;
 
-                    let in_token = Token(next_token);
+                    let encrypted_token = Token(next_token);
                     next_token = next_token.checked_add(1).unwrap();
-                    let out_token = Token(next_token);
+                    let plain_token = Token(next_token);
                     next_token = next_token.checked_add(1).unwrap();
 
                     let our_nonce = Nonce::random()?;
 
-                    let mut input = stream::Stream::new(input, in_token);
-                    input.initial_registration(&poll)?;
+                    let (plain, encrypted) = if encrypt {
+                        (accepted, initiated)
+                    } else {
+                        (initiated, accepted)
+                    };
 
-                    let mut output = stream::Stream::new(output, out_token);
-                    output.initial_registration(&poll)?;
+                    let mut encrypted = stream::Stream::new(encrypted, encrypted_token);
+                    encrypted.initial_registration(&poll)?;
+
+                    let mut plain = stream::Stream::new(plain, plain_token);
+                    plain.initial_registration(&poll)?;
 
                     debug!(
-                        "connection in:{} out:{} addr:{}",
-                        in_token.0, out_token.0, from
+                        "connection enc:{} plain:{} addr:{}",
+                        encrypted_token.0, plain_token.0, from
                     );
 
-                    if encrypt {
-                        output.write_buffer.extend_from_slice(&our_nonce.0);
-                        stream::flush_buffer(&mut output)?;
-                    } else {
-                        input.write_buffer.extend_from_slice(&our_nonce.0);
-                        stream::flush_buffer(&mut input)?;
-                    }
+                    encrypted.write_buffer.extend_from_slice(&our_nonce.0);
+                    stream::flush_buffer(&mut encrypted)?;
 
-                    input.reregister(&poll)?;
-                    output.reregister(&poll)?;
+                    encrypted.reregister(&poll)?;
+                    plain.reregister(&poll)?;
 
                     server.clients.insert(
-                        in_token,
+                        encrypted_token,
                         Conn {
-                            input,
-                            output,
+                            encrypted,
+                            plain,
                             packet_number_encrypt: 0,
                             packet_number_decrypt: 0,
                             crypto: Crypto::NonceSent {
@@ -217,8 +218,8 @@ fn main() -> Result<(), Error> {
                     debug!("event client:{}", client.0);
                     if let Some(conn) = server.clients.get_mut(&round_down(client)) {
                         duplify(&key, decrypt, conn)?;
-                        conn.input.reregister(&poll)?;
-                        conn.output.reregister(&poll)?;
+                        conn.encrypted.reregister(&poll)?;
+                        conn.plain.reregister(&poll)?;
                     }
                 }
             }
@@ -236,17 +237,13 @@ fn round_down(value: Token) -> Token {
 }
 
 fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
-    stream::flush_buffer(&mut conn.input)?;
-    stream::flush_buffer(&mut conn.output)?;
+    stream::flush_buffer(&mut conn.encrypted)?;
+    stream::flush_buffer(&mut conn.plain)?;
 
     loop {
         match &conn.crypto {
             Crypto::NonceSent { our_nonce, our_x } => {
-                let negotiate = if decrypt {
-                    &mut conn.input
-                } else {
-                    &mut conn.output
-                };
+                let negotiate = &mut conn.encrypted;
 
                 let server = decrypt;
 
@@ -265,12 +262,13 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                     (our_nonce, &other_nonce)
                 };
 
-                let mut nonces = [0u8; 32 * 2];
+                let mut nonces = [0u8; BothNonces::BYTES];
                 nonces[..32].copy_from_slice(&client_nonce.0);
                 nonces[32..].copy_from_slice(&server_nonce.0);
+                let nonces = BothNonces(nonces);
 
                 let mut double_dk = [0u8; 32 * 2];
-                pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &nonces, 1, &mut double_dk);
+                pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &nonces.0, 1, &mut double_dk);
 
                 let dh_mac_client = MacKey::from_slice(&double_dk[..32]);
                 let dh_mac_server = MacKey::from_slice(&double_dk[32..]);
@@ -312,11 +310,7 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 our_x,
                 their_dh_mac_key,
             } => {
-                let negotiate = if decrypt {
-                    &mut conn.input
-                } else {
-                    &mut conn.output
-                };
+                let negotiate = &mut conn.encrypted;
 
                 let y_h_len = YParam::BYTES + MacResult::BYTES;
                 stream::fill_buffer_target(negotiate, y_h_len)?;
@@ -342,7 +336,7 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 assert_eq!(256, shared.len(), "short shared");
 
                 let mut buf = Vec::with_capacity(32 + 32 + 256);
-                buf.extend_from_slice(nonces);
+                buf.extend_from_slice(&nonces.0);
                 buf.extend_from_slice(&shared);
 
                 let mut quad_dk = [0u8; EncKey::BYTES * 2 + MacKey::BYTES * 2];
@@ -355,51 +349,36 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
 
                 conn.crypto = if decrypt {
                     Crypto::Done {
-                        ours: server,
-                        theirs: client,
+                        decrypt: server,
+                        encrypt: client,
                     }
                 } else {
                     Crypto::Done {
-                        ours: client,
-                        theirs: server,
+                        decrypt: client,
+                        encrypt: server,
                     }
                 }
             }
-            Crypto::Done { ours, theirs } => {
-                if decrypt {
-                    stream::decrypt_stream(
-                        theirs,
-                        &mut conn.input,
-                        &mut conn.output,
-                        &mut conn.packet_number_decrypt,
-                    )?;
-                    stream::encrypt_stream(
-                        ours,
-                        &mut conn.output,
-                        &mut conn.input,
-                        &mut conn.packet_number_encrypt,
-                    )?;
-                } else {
-                    stream::encrypt_stream(
-                        theirs,
-                        &mut conn.input,
-                        &mut conn.output,
-                        &mut conn.packet_number_encrypt,
-                    )?;
-                    stream::decrypt_stream(
-                        ours,
-                        &mut conn.output,
-                        &mut conn.input,
-                        &mut conn.packet_number_decrypt,
-                    )?;
-                }
+            Crypto::Done { decrypt, encrypt } => {
+                stream::decrypt_stream(
+                    decrypt,
+                    &mut conn.encrypted,
+                    &mut conn.plain,
+                    &mut conn.packet_number_decrypt,
+                )?;
+                stream::encrypt_stream(
+                    encrypt,
+                    &mut conn.plain,
+                    &mut conn.encrypted,
+                    &mut conn.packet_number_encrypt,
+                )?;
                 break;
             }
         }
     }
 
-    stream::flush_buffer(&mut conn.input)?;
-    stream::flush_buffer(&mut conn.output)?;
+    stream::flush_buffer(&mut conn.encrypted)?;
+    stream::flush_buffer(&mut conn.plain)?;
 
     Ok(())
 }
@@ -430,8 +409,8 @@ struct Server {
 }
 
 struct Conn {
-    input: stream::Stream,
-    output: stream::Stream,
+    plain: stream::Stream,
+    encrypted: stream::Stream,
     packet_number_encrypt: u64,
     packet_number_decrypt: u64,
     crypto: Crypto,
@@ -444,12 +423,12 @@ enum Crypto {
         our_x: XParam,
     },
     NonceReceived {
-        nonces: [u8; 32 * 2],
+        nonces: BothNonces,
         our_x: XParam,
         their_dh_mac_key: MacKey,
     },
     Done {
-        ours: (EncKey, MacKey),
-        theirs: (EncKey, MacKey),
+        decrypt: (EncKey, MacKey),
+        encrypt: (EncKey, MacKey),
     },
 }
