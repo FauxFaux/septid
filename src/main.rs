@@ -265,45 +265,15 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 our_x,
                 their_dh_mac_key,
             } => {
-                let negotiate = &mut conn.encrypted;
-
-                let y_h_len = YParam::BYTES + MacResult::BYTES;
-                let y_h = match negotiate.read_exact(y_h_len)? {
+                let y_h = match conn
+                    .encrypted
+                    .read_exact(YParam::BYTES + MacResult::BYTES)?
+                {
                     Some(y_h) => y_h,
                     None => break,
                 };
 
-                let (their_mac, their_y) = y_h.split_at(YParam::BYTES);
-
-                let their_mac = MacResult::from_slice(their_mac);
-
-                let expected_mac = crypto::mac(&their_dh_mac_key, their_y);
-                use subtle::ConstantTimeEq;
-                ensure!(expected_mac.ct_eq(&their_mac).unwrap_u8() == 1, "bad mac");
-
-                let their_y = BigUint::from_bytes_be(their_y);
-                let prime = BigUint::from_bytes_be(&crypto::GROUP_14_PRIME.0);
-                ensure!(their_y < prime, "bad y");
-
-                // BORROW CHECKER
-                drop(y_h);
-
-                let shared = their_y
-                    .modpow(&BigUint::from_bytes_be(&our_x.0), &prime)
-                    .to_bytes_be();
-                assert_eq!(256, shared.len(), "short shared");
-
-                let mut buf = Vec::with_capacity(32 + 32 + 256);
-                buf.extend_from_slice(&nonces.0);
-                buf.extend_from_slice(&shared);
-
-                let mut quad_dk = [0u8; EncKey::BYTES * 2 + MacKey::BYTES * 2];
-                pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &buf, 1, &mut quad_dk);
-
-                let server = two_keys(&quad_dk[..64]);
-                let client = two_keys(&quad_dk[64..]);
-
-                debug!("keys-agreed client:{}", negotiate.token.0);
+                let (client, server) = y_h_to_keys(key, their_dh_mac_key, our_x, nonces, &y_h)?;
 
                 conn.crypto = if decrypt {
                     Crypto::Done {
@@ -406,6 +376,43 @@ fn reply_with_y(
     };
 
     Ok(Some((nonces, their_dh_mac_key)))
+}
+
+fn y_h_to_keys(
+    key: &MasterKey,
+    their_dh_mac_key: &MacKey,
+    our_x: &XParam,
+    nonces: &BothNonces,
+    y_h: &[u8],
+) -> Result<((EncKey, MacKey), (EncKey, MacKey)), Error> {
+    let (their_mac, their_y) = y_h.split_at(YParam::BYTES);
+
+    let their_mac = MacResult::from_slice(their_mac);
+
+    let expected_mac = crypto::mac(&their_dh_mac_key, their_y);
+    use subtle::ConstantTimeEq;
+    ensure!(expected_mac.ct_eq(&their_mac).unwrap_u8() == 1, "bad mac");
+
+    let their_y = BigUint::from_bytes_be(their_y);
+    let prime = BigUint::from_bytes_be(&crypto::GROUP_14_PRIME.0);
+    ensure!(their_y < prime, "bad y");
+
+    let shared = their_y
+        .modpow(&BigUint::from_bytes_be(&our_x.0), &prime)
+        .to_bytes_be();
+    assert_eq!(256, shared.len(), "short shared");
+
+    let mut buf = Vec::with_capacity(32 + 32 + 256);
+    buf.extend_from_slice(&nonces.0);
+    buf.extend_from_slice(&shared);
+
+    let mut quad_dk = [0u8; EncKey::BYTES * 2 + MacKey::BYTES * 2];
+    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &buf, 1, &mut quad_dk);
+
+    let client = two_keys(&quad_dk[64..]);
+    let server = two_keys(&quad_dk[..64]);
+
+    Ok((client, server))
 }
 
 fn load_key(from: &str) -> Result<MasterKey, Error> {
