@@ -102,7 +102,15 @@ fn main() -> Result<(), Error> {
         clients: HashMap::new(),
         source: Some(source),
         target,
+        next_token: 10,
     };
+
+    let mut addrs = {
+        use std::net::ToSocketAddrs;
+        server.target.to_socket_addrs()?.cycle()
+    };
+
+    addrs.next().ok_or_else(|| err_msg("no resolution"))?;
 
     let signals =
         signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
@@ -125,8 +133,6 @@ fn main() -> Result<(), Error> {
         mio::PollOpt::edge(),
     )?;
 
-    let mut next_token = 10usize;
-
     let mut events = mio::Events::with_capacity(32);
     'app: loop {
         poll.poll(&mut events, None)?;
@@ -143,21 +149,8 @@ fn main() -> Result<(), Error> {
                     };
 
                     let (accepted, from) = source.accept()?;
-                    let addr = {
-                        use std::net::ToSocketAddrs;
-                        server
-                            .target
-                            .to_socket_addrs()?
-                            .next()
-                            .ok_or_else(|| err_msg("no resolution"))?
-                    };
 
-                    let initiated = TcpStream::connect(&addr)?;
-
-                    let encrypted_token = Token(next_token);
-                    next_token = next_token.checked_add(1).unwrap();
-                    let plain_token = Token(next_token);
-                    next_token = next_token.checked_add(1).unwrap();
+                    let initiated = TcpStream::connect(&addrs.next().expect("non-empty cycle"))?;
 
                     let our_nonce = Nonce::random()?;
 
@@ -166,6 +159,8 @@ fn main() -> Result<(), Error> {
                     } else {
                         (initiated, accepted)
                     };
+
+                    let (encrypted_token, plain_token) = server.token_pair();
 
                     let mut encrypted = stream::Stream::new(encrypted, encrypted_token);
                     encrypted.initial_registration(&poll)?;
@@ -431,6 +426,17 @@ struct Server {
     source: Option<TcpListener>,
     target: String,
     clients: HashMap<Token, Conn>,
+    next_token: usize,
+}
+
+impl Server {
+    fn token_pair(&mut self) -> (Token, Token) {
+        let left = Token(self.next_token);
+        self.next_token = self.next_token.checked_add(1).unwrap();
+        let right = Token(self.next_token);
+        self.next_token = self.next_token.checked_add(1).unwrap();
+        (left, right)
+    }
 }
 
 struct Conn {

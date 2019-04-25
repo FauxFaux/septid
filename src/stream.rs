@@ -198,8 +198,8 @@ pub fn flush_buffer(stream: &mut Stream) -> Result<(), io::Error> {
 
 pub struct Stream {
     inner: TcpStream,
-    pub token: mio::Token,
-    pub read_buffer: Vec<u8>,
+    token: mio::Token,
+    read_buffer: Vec<u8>,
     pub write_buffer: Vec<u8>,
 }
 
