@@ -59,7 +59,7 @@ pub fn encrypt_stream(
     let hash = crypto::mac(mac, data_to_mac);
     (&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..]).copy_from_slice(&hash.code());
 
-    to.write_buffer.extend_from_slice(&packet);
+    to.write_all(&packet)?;
     from.read_buffer.drain(..data_len);
 
     debug!("encrypt-done from:{} len:{}", from.token.0, data_len);
@@ -119,8 +119,7 @@ pub fn decrypt_stream(
         "invalid padding"
     );
 
-    let msg = &packet[..actual_len];
-    to.write_buffer.extend_from_slice(msg);
+    to.write_all(&packet[..actual_len])?;
 
     from.read_buffer.drain(..PACKET_LEN);
 
@@ -200,7 +199,7 @@ pub struct Stream {
     inner: TcpStream,
     token: mio::Token,
     read_buffer: Vec<u8>,
-    pub write_buffer: Vec<u8>,
+    write_buffer: Vec<u8>,
 }
 
 impl Stream {
@@ -248,6 +247,11 @@ impl Stream {
         Ok(Some(ReadResult {
             inner: self.read_buffer.drain(..len),
         }))
+    }
+
+    pub fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
+        self.write_buffer.extend_from_slice(buf);
+        flush_buffer(self)
     }
 }
 

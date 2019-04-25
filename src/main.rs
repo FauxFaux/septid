@@ -173,8 +173,7 @@ fn main() -> Result<(), Error> {
                         encrypted_token.0, plain_token.0, from
                     );
 
-                    encrypted.write_buffer.extend_from_slice(&our_nonce.0);
-                    stream::flush_buffer(&mut encrypted)?;
+                    encrypted.write_all(&our_nonce.0)?;
 
                     encrypted.reregister(&poll)?;
                     plain.reregister(&poll)?;
@@ -237,9 +236,6 @@ fn round_down(value: Token) -> Token {
 }
 
 fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
-    stream::flush_buffer(&mut conn.encrypted)?;
-    stream::flush_buffer(&mut conn.plain)?;
-
     loop {
         match &conn.crypto {
             Crypto::NonceSent { our_nonce, our_x } => {
@@ -251,7 +247,7 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 let (response, nonces, their_dh_mac_key) =
                     generate_y_reply(key, &other_nonce, decrypt, our_nonce, our_x)?;
 
-                conn.encrypted.write_buffer.extend_from_slice(&response);
+                conn.encrypted.write_all(&response)?;
 
                 conn.crypto = Crypto::NonceReceived {
                     nonces,
