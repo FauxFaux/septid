@@ -1,10 +1,24 @@
+use std::fs;
+use std::io;
+
 use crypto_mac::Mac;
+use failure::ensure;
+use failure::Error;
 use hmac::Hmac;
+use num_bigint::BigUint;
 use sha2::Sha256;
 use subtle::Choice;
 use subtle::ConstantTimeEq;
 
 use super::named_array;
+use super::BothNonces;
+use super::EncKey;
+use super::MacKey;
+use super::MasterKey;
+use super::Nonce;
+use super::XParam;
+use super::YParam;
+use super::Y_H_LEN;
 
 // TODO: maybe don't use the macro, so we don't pay the drop cost
 named_array!(MacResult, 256);
@@ -28,8 +42,122 @@ pub fn mac(key: &super::MacKey, data: &[u8]) -> MacResult {
     MacResult::from_slice(&hmac.result().code())
 }
 
+pub fn generate_y_reply(
+    key: &MasterKey,
+    other_nonce: &Nonce,
+    decrypt: bool,
+    our_nonce: &Nonce,
+    our_x: &XParam,
+) -> Result<([u8; Y_H_LEN], BothNonces, MacKey), Error> {
+    let (client_nonce, server_nonce) = if decrypt {
+        (other_nonce, our_nonce)
+    } else {
+        (our_nonce, other_nonce)
+    };
+
+    let mut nonces = [0u8; BothNonces::BYTES];
+    nonces[..32].copy_from_slice(&client_nonce.0);
+    nonces[32..].copy_from_slice(&server_nonce.0);
+    let nonces = BothNonces(nonces);
+
+    let mut double_dk = [0u8; 32 * 2];
+    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &nonces.0, 1, &mut double_dk);
+
+    let dh_mac_client = MacKey::from_slice(&double_dk[..32]);
+    let dh_mac_server = MacKey::from_slice(&double_dk[32..]);
+
+    let two = BigUint::from(2u8);
+
+    // TODO: constant time
+    let our_y = two.modpow(
+        &BigUint::from_bytes_be(&our_x.0),
+        &BigUint::from_bytes_be(&GROUP_14_PRIME.0),
+    );
+
+    // TODO: pad to length
+    let our_y = our_y.to_bytes_be();
+    assert_eq!(YParam::BYTES, our_y.len(), "short y");
+
+    let y_mac = mac(
+        if decrypt {
+            &dh_mac_server
+        } else {
+            &dh_mac_client
+        },
+        &our_y,
+    );
+
+    let mut response = [0u8; Y_H_LEN];
+
+    response[..YParam::BYTES].copy_from_slice(&our_y);
+    response[YParam::BYTES..].copy_from_slice(&y_mac.code());
+
+    let their_dh_mac_key = if decrypt {
+        dh_mac_client
+    } else {
+        dh_mac_server
+    };
+
+    Ok((response, nonces, their_dh_mac_key))
+}
+
+pub fn y_h_to_keys(
+    key: &MasterKey,
+    their_dh_mac_key: &MacKey,
+    our_x: &XParam,
+    nonces: &BothNonces,
+    y_h: &[u8],
+) -> Result<((EncKey, MacKey), (EncKey, MacKey)), Error> {
+    let (their_y, their_mac) = y_h.split_at(YParam::BYTES);
+
+    let their_mac = MacResult::from_slice(their_mac);
+
+    let expected_mac = mac(&their_dh_mac_key, their_y);
+    use subtle::ConstantTimeEq;
+    ensure!(expected_mac.ct_eq(&their_mac).unwrap_u8() == 1, "bad mac");
+
+    let their_y = BigUint::from_bytes_be(their_y);
+    let prime = BigUint::from_bytes_be(&GROUP_14_PRIME.0);
+    ensure!(their_y < prime, "bad y");
+
+    let shared = their_y
+        .modpow(&BigUint::from_bytes_be(&our_x.0), &prime)
+        .to_bytes_be();
+    assert_eq!(256, shared.len(), "short shared");
+
+    let mut buf = Vec::with_capacity(32 + 32 + 256);
+    buf.extend_from_slice(&nonces.0);
+    buf.extend_from_slice(&shared);
+
+    let mut quad_dk = [0u8; EncKey::BYTES * 2 + MacKey::BYTES * 2];
+    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &buf, 1, &mut quad_dk);
+
+    let client = two_keys(&quad_dk[64..]);
+    let server = two_keys(&quad_dk[..64]);
+
+    Ok((client, server))
+}
+
+pub fn load_key(from: &str) -> Result<MasterKey, Error> {
+    use digest::Digest as _;
+    use digest::FixedOutput as _;
+
+    let mut ctx = sha2::Sha256::new();
+    let mut file = fs::File::open(from)?;
+    io::copy(&mut file, &mut ctx)?;
+
+    Ok(MasterKey::from_slice(&ctx.fixed_result()))
+}
+
+fn two_keys(buf: &[u8]) -> (EncKey, MacKey) {
+    (
+        EncKey::from_slice(&buf[..EncKey::BYTES]),
+        MacKey::from_slice(&buf[EncKey::BYTES..]),
+    )
+}
+
 /// rfc3526 2048
-pub const GROUP_14_PRIME: super::YParam = super::YParam([
+const GROUP_14_PRIME: super::YParam = super::YParam([
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xC9, 0x0F, 0xDA, 0xA2, 0x21, 0x68, 0xC2, 0x34,
     0xC4, 0xC6, 0x62, 0x8B, 0x80, 0xDC, 0x1C, 0xD1, 0x29, 0x02, 0x4E, 0x08, 0x8A, 0x67, 0xCC, 0x74,
     0x02, 0x0B, 0xBE, 0xA6, 0x3B, 0x13, 0x9B, 0x22, 0x51, 0x4A, 0x08, 0x79, 0x8E, 0x34, 0x04, 0xDD,

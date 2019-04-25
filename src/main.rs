@@ -33,7 +33,7 @@ named_array!(YParam, 2048);
 named_array!(EncKey, 256);
 named_array!(MacKey, 256);
 
-const Y_H_LEN: usize = YParam::BYTES + MacResult::BYTES;
+pub const Y_H_LEN: usize = YParam::BYTES + MacResult::BYTES;
 
 fn main() -> Result<(), Error> {
     pretty_env_logger::init();
@@ -91,7 +91,7 @@ fn main() -> Result<(), Error> {
     let target = matches.opt_get("t")?.expect("opt required");
 
     let key_path: String = matches.opt_get("k")?.expect("opt required");
-    let key = load_key(&key_path)?;
+    let key = crypto::load_key(&key_path)?;
 
     assert!(!matches.opt_present("u"), "-u unsupported");
 
@@ -245,7 +245,7 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 };
 
                 let (response, nonces, their_dh_mac_key) =
-                    generate_y_reply(key, &other_nonce, decrypt, our_nonce, our_x)?;
+                    crypto::generate_y_reply(key, &other_nonce, decrypt, our_nonce, our_x)?;
 
                 conn.encrypted.write_all(&response)?;
 
@@ -265,7 +265,8 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                     None => break,
                 };
 
-                let (client, server) = y_h_to_keys(key, their_dh_mac_key, our_x, nonces, &y_h)?;
+                let (client, server) =
+                    crypto::y_h_to_keys(key, their_dh_mac_key, our_x, nonces, &y_h)?;
 
                 conn.crypto = if decrypt {
                     Crypto::Done {
@@ -301,120 +302,6 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
     stream::flush_buffer(&mut conn.plain)?;
 
     Ok(())
-}
-
-fn generate_y_reply(
-    key: &MasterKey,
-    other_nonce: &Nonce,
-    decrypt: bool,
-    our_nonce: &Nonce,
-    our_x: &XParam,
-) -> Result<([u8; Y_H_LEN], BothNonces, MacKey), Error> {
-    let (client_nonce, server_nonce) = if decrypt {
-        (other_nonce, our_nonce)
-    } else {
-        (our_nonce, other_nonce)
-    };
-
-    let mut nonces = [0u8; BothNonces::BYTES];
-    nonces[..32].copy_from_slice(&client_nonce.0);
-    nonces[32..].copy_from_slice(&server_nonce.0);
-    let nonces = BothNonces(nonces);
-
-    let mut double_dk = [0u8; 32 * 2];
-    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &nonces.0, 1, &mut double_dk);
-
-    let dh_mac_client = MacKey::from_slice(&double_dk[..32]);
-    let dh_mac_server = MacKey::from_slice(&double_dk[32..]);
-
-    let two = BigUint::from(2u8);
-
-    // TODO: constant time
-    let our_y = two.modpow(
-        &BigUint::from_bytes_be(&our_x.0),
-        &BigUint::from_bytes_be(&crypto::GROUP_14_PRIME.0),
-    );
-
-    // TODO: pad to length
-    let our_y = our_y.to_bytes_be();
-    assert_eq!(YParam::BYTES, our_y.len(), "short y");
-
-    let y_mac = crypto::mac(
-        if decrypt {
-            &dh_mac_server
-        } else {
-            &dh_mac_client
-        },
-        &our_y,
-    );
-
-    let mut response = [0u8; Y_H_LEN];
-
-    response[..YParam::BYTES].copy_from_slice(&our_y);
-    response[YParam::BYTES..].copy_from_slice(&y_mac.code());
-
-    let their_dh_mac_key = if decrypt {
-        dh_mac_client
-    } else {
-        dh_mac_server
-    };
-
-    Ok((response, nonces, their_dh_mac_key))
-}
-
-fn y_h_to_keys(
-    key: &MasterKey,
-    their_dh_mac_key: &MacKey,
-    our_x: &XParam,
-    nonces: &BothNonces,
-    y_h: &[u8],
-) -> Result<((EncKey, MacKey), (EncKey, MacKey)), Error> {
-    let (their_y, their_mac) = y_h.split_at(YParam::BYTES);
-
-    let their_mac = MacResult::from_slice(their_mac);
-
-    let expected_mac = crypto::mac(&their_dh_mac_key, their_y);
-    use subtle::ConstantTimeEq;
-    ensure!(expected_mac.ct_eq(&their_mac).unwrap_u8() == 1, "bad mac");
-
-    let their_y = BigUint::from_bytes_be(their_y);
-    let prime = BigUint::from_bytes_be(&crypto::GROUP_14_PRIME.0);
-    ensure!(their_y < prime, "bad y");
-
-    let shared = their_y
-        .modpow(&BigUint::from_bytes_be(&our_x.0), &prime)
-        .to_bytes_be();
-    assert_eq!(256, shared.len(), "short shared");
-
-    let mut buf = Vec::with_capacity(32 + 32 + 256);
-    buf.extend_from_slice(&nonces.0);
-    buf.extend_from_slice(&shared);
-
-    let mut quad_dk = [0u8; EncKey::BYTES * 2 + MacKey::BYTES * 2];
-    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &buf, 1, &mut quad_dk);
-
-    let client = two_keys(&quad_dk[64..]);
-    let server = two_keys(&quad_dk[..64]);
-
-    Ok((client, server))
-}
-
-fn load_key(from: &str) -> Result<MasterKey, Error> {
-    use digest::Digest as _;
-    use digest::FixedOutput as _;
-
-    let mut ctx = sha2::Sha256::new();
-    let mut file = fs::File::open(from)?;
-    io::copy(&mut file, &mut ctx)?;
-
-    Ok(MasterKey::from_slice(&ctx.fixed_result()))
-}
-
-fn two_keys(buf: &[u8]) -> (EncKey, MacKey) {
-    (
-        EncKey::from_slice(&buf[..EncKey::BYTES]),
-        MacKey::from_slice(&buf[EncKey::BYTES..]),
-    )
 }
 
 struct Server {
