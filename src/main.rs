@@ -3,11 +3,8 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::fs;
-use std::io;
 use std::mem;
 
-use failure::ensure;
 use failure::err_msg;
 use failure::Error;
 use getrandom::getrandom;
@@ -15,7 +12,6 @@ use log::debug;
 use mio::net::TcpListener;
 use mio::net::TcpStream;
 use mio::Token;
-use num_bigint::BigUint;
 
 mod crypto;
 mod named_array;

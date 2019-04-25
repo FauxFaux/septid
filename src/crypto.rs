@@ -113,7 +113,6 @@ pub fn y_h_to_keys(
     let their_mac = MacResult::from_slice(their_mac);
 
     let expected_mac = mac(&their_dh_mac_key, their_y);
-    use subtle::ConstantTimeEq;
     ensure!(expected_mac.ct_eq(&their_mac).unwrap_u8() == 1, "bad mac");
 
     let their_y = BigUint::from_bytes_be(their_y);
