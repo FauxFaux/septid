@@ -3,10 +3,13 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::fs;
 use std::mem;
 
 use failure::err_msg;
+use failure::format_err;
 use failure::Error;
+use failure::ResultExt;
 use getrandom::getrandom;
 use log::debug;
 use mio::net::TcpListener;
@@ -87,11 +90,15 @@ fn main() -> Result<(), Error> {
     let target = matches.opt_get("t")?.expect("opt required");
 
     let key_path: String = matches.opt_get("k")?.expect("opt required");
-    let key = crypto::load_key(&key_path)?;
+    let key = {
+        let file = fs::File::open(&key_path)
+            .with_context(|_| format_err!("opening key {:?}", key_path))?;
+        crypto::load_key(file)?
+    };
 
     assert!(!matches.opt_present("u"), "-u unsupported");
 
-    getrandom(&mut [0u8; 1])?;
+    getrandom(&mut [0u8; 1]).with_context(|_| err_msg("warming up random numbers"))?;
 
     let mut server = Server {
         encrypt,

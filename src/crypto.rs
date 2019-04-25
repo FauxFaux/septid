@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 
 use crypto_mac::Mac;
@@ -137,13 +136,12 @@ pub fn y_h_to_keys(
     Ok((client, server))
 }
 
-pub fn load_key(from: &str) -> Result<MasterKey, Error> {
+pub fn load_key<R: io::Read>(mut from: R) -> Result<MasterKey, Error> {
     use digest::Digest as _;
     use digest::FixedOutput as _;
 
     let mut ctx = sha2::Sha256::new();
-    let mut file = fs::File::open(from)?;
-    io::copy(&mut file, &mut ctx)?;
+    io::copy(&mut from, &mut ctx)?;
 
     Ok(MasterKey::from_slice(&ctx.fixed_result()))
 }
