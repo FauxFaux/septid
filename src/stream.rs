@@ -13,6 +13,7 @@ use failure::ensure;
 use failure::Error;
 use log::debug;
 use mio::net::TcpStream;
+use subtle::ConstantTimeEq;
 
 use super::crypto::MacResult;
 use crate::crypto;
@@ -73,55 +74,53 @@ pub fn decrypt_stream(
     to: &mut Stream,
     packet_number: &mut u64,
 ) -> Result<(), Error> {
-    fill_buffer_target(from, PACKET_LEN)?;
-    if from.read_buffer.len() < PACKET_LEN {
-        return Ok(());
-    }
+    let token = from.token;
 
-    debug!("decrypt from:{}", from.token.0);
+    let packet = match from.read_exact(PACKET_LEN)? {
+        Some(packet) => packet,
+        None => return Ok(()),
+    };
 
-    let packet = &mut from.read_buffer[..PACKET_LEN];
+    debug!("decrypt from:{}", token.0);
 
     //    msg_padded: [ message ] [ padded up to 1024 bytes ] [ length: 4 bytes ]
     // msg_encrypted: encrypt(msg_padded)
     //       payload: [ msg_encrypted ] [ mac([ msg_encrypted ] [ packet number: 8 bytes ]):
 
     // copy the mac out of the read buffer
-    let mac_actual = crypto::MacResult::from_slice(&packet[PACKET_MESSAGE_ENCRYPTED_LEN..]);
+    let (msg_encrypted, mac_actual) = packet.split_at(PACKET_MESSAGE_ENCRYPTED_LEN);
 
-    // write the packet number into the read_buffer, overwriting part of the mac
-    BE::write_u64(&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..], *packet_number);
+    let mac_expected = {
+        use crypto_mac::Mac;
+        let mut computer = mac.begin();
+        computer.input(msg_encrypted);
+        computer.input(&packet_number.to_be_bytes());
+        computer.result().code()
+    };
 
-    let data_to_mac = &packet[..PACKET_MESSAGE_ENCRYPTED_LEN + PACKET_PACKET_NUMBER_LEN];
-    use subtle::ConstantTimeEq;
     ensure!(
-        1 == crypto::mac(mac, &data_to_mac)
-            .ct_eq(&mac_actual)
-            .unwrap_u8(),
+        1 == mac_expected.ct_eq(&mac_actual).unwrap_u8(),
         "packet mac bad"
     );
 
-    aes_ctr(
-        enc,
-        &mut packet[..PACKET_MESSAGE_ENCRYPTED_LEN],
-        packet_number,
-    );
+    // TODO: eliminate this copy
+    let mut msg_encrypted = msg_encrypted.to_vec();
 
-    let actual_len = usize(BE::read_u32(&packet[PACKET_MAX_MESSAGE_LEN..]));
+    aes_ctr(enc, &mut msg_encrypted, packet_number);
+
+    let actual_len = usize(BE::read_u32(&msg_encrypted[PACKET_MAX_MESSAGE_LEN..]));
     ensure!(
         actual_len != 0 && actual_len <= PACKET_MAX_MESSAGE_LEN,
         "invalid len"
     );
     ensure!(
-        packet[actual_len..PACKET_MAX_MESSAGE_LEN]
+        msg_encrypted[actual_len..PACKET_MAX_MESSAGE_LEN]
             .iter()
             .all(|&x| 0 == x),
         "invalid padding"
     );
 
-    to.write_all(&packet[..actual_len])?;
-
-    from.read_buffer.drain(..PACKET_LEN);
+    to.write_all(&msg_encrypted[..actual_len])?;
 
     Ok(())
 }

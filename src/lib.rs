@@ -293,3 +293,10 @@ enum Crypto {
         encrypt: (EncKey, MacKey),
     },
 }
+
+impl MacKey {
+    fn begin(&self) -> hmac::Hmac<sha2::Sha256> {
+        use crypto_mac::Mac;
+        hmac::Hmac::<sha2::Sha256>::new_varkey(&self.0).expect("all keys are valid for hmac")
+    }
+}
