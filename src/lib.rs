@@ -2,15 +2,10 @@
 #![feature(vec_drain_as_slice)]
 
 use std::collections::HashMap;
-use std::env;
-use std::fs;
 use std::mem;
 
 use failure::err_msg;
-use failure::format_err;
 use failure::Error;
-use failure::ResultExt;
-use getrandom::getrandom;
 use log::debug;
 use mio::net::TcpListener;
 use mio::net::TcpStream;
@@ -20,6 +15,7 @@ mod crypto;
 mod named_array;
 mod stream;
 
+pub use crypto::load_key;
 use crypto::MacResult;
 
 named_array!(MasterKey, 256);
@@ -34,86 +30,35 @@ named_array!(MacKey, 256);
 
 pub const Y_H_LEN: usize = YParam::BYTES + MacResult::BYTES;
 
-fn main() -> Result<(), Error> {
-    pretty_env_logger::init();
-    let mut args = env::args();
-    let _us = args.next().unwrap_or_else(String::new);
-    let mut opts = getopts::Options::new();
-    opts.optflag("e", "encrypt", "forward data over an encrypted connection");
-    opts.optflag(
-        "d",
-        "decrypt",
-        "decrypt data from a encrypt, and forward it",
-    );
+pub struct StartServer {
+    pub key: MasterKey,
+    pub bind_address: Vec<String>,
+    pub target_address: Vec<String>,
+    pub encrypt: bool,
+}
 
-    opts.reqopt(
-        "k",
-        "key-file",
-        "key for encryption and authentication",
-        "FILE",
-    );
+pub fn start_server(config: &StartServer) -> Result<(), Error> {
+    // TODO: [0]
+    let source = mio::net::TcpListener::bind(&config.bind_address[0].parse()?)?;
 
-    opts.reqopt("s", "source", "listen for connections", "IP:PORT");
-    opts.reqopt("t", "target", "make connections to", "HOST:PORT");
-
-    opts.optopt("u", "uid", "drop privileges after binding", "USER:GROUP");
-
-    opts.optflag("h", "help", "print this help menu");
-
-    let matches = match opts.parse(args) {
-        Ok(matches) => matches,
-        Err(f) => {
-            use std::error::Error as _;
-            eprintln!("error: {}", f.description());
-            return Ok(());
-        }
+    let mut target_addrs = {
+        use std::net::ToSocketAddrs;
+        // TODO: [0]
+        config.target_address[0].to_socket_addrs()?.cycle()
     };
 
-    // TODO: error feedback
-    assert_eq!(
-        0,
-        matches.free.len(),
-        "all arguments must start with a hyphen"
-    );
-
-    let decrypt = matches.opt_present("d");
-    let encrypt = matches.opt_present("e");
-
-    assert_ne!(decrypt, encrypt, "-d or -e is required");
-
-    let addr = matches
-        .opt_get::<String>("s")?
-        .expect("opt required")
-        .parse()?;
-
-    let source = mio::net::TcpListener::bind(&addr)?;
-    let target = matches.opt_get("t")?.expect("opt required");
-
-    let key_path: String = matches.opt_get("k")?.expect("opt required");
-    let key = {
-        let file = fs::File::open(&key_path)
-            .with_context(|_| format_err!("opening key {:?}", key_path))?;
-        crypto::load_key(file)?
-    };
-
-    assert!(!matches.opt_present("u"), "-u unsupported");
-
-    getrandom(&mut [0u8; 1]).with_context(|_| err_msg("warming up random numbers"))?;
+    target_addrs
+        .next()
+        .ok_or_else(|| err_msg("no resolution"))?;
 
     let mut server = Server {
-        encrypt,
+        key: config.key.clone(),
+        encrypt: config.encrypt,
         clients: HashMap::new(),
         source: Some(source),
-        target,
         next_token: 10,
+        target_addrs,
     };
-
-    let mut addrs = {
-        use std::net::ToSocketAddrs;
-        server.target.to_socket_addrs()?.cycle()
-    };
-
-    addrs.next().ok_or_else(|| err_msg("no resolution"))?;
 
     let signals =
         signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
@@ -153,7 +98,8 @@ fn main() -> Result<(), Error> {
 
                     let (accepted, from) = source.accept()?;
 
-                    let initiated = TcpStream::connect(&addrs.next().expect("non-empty cycle"))?;
+                    let initiated =
+                        TcpStream::connect(&server.target_addrs.next().expect("non-empty cycle"))?;
 
                     let (plain, encrypted) = if server.encrypt {
                         (accepted, initiated)
@@ -188,10 +134,7 @@ fn main() -> Result<(), Error> {
                             plain,
                             packet_number_encrypt: 0,
                             packet_number_decrypt: 0,
-                            crypto: Crypto::NonceSent {
-                                our_nonce,
-                                our_x,
-                            },
+                            crypto: Crypto::NonceSent { our_nonce, our_x },
                         },
                     );
                 }
@@ -219,7 +162,7 @@ fn main() -> Result<(), Error> {
                 client => {
                     debug!("event client:{}", client.0);
                     if let Some(conn) = server.clients.get_mut(&round_down(client)) {
-                        duplify(&key, !server.encrypt, conn)?;
+                        duplify(&server.key, !server.encrypt, conn)?;
                         conn.encrypted.reregister(&poll)?;
                         conn.plain.reregister(&poll)?;
                     }
@@ -308,11 +251,12 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
 }
 
 struct Server {
+    key: MasterKey,
     encrypt: bool,
     source: Option<TcpListener>,
-    target: String,
     clients: HashMap<Token, Conn>,
     next_token: usize,
+    target_addrs: std::iter::Cycle<std::vec::IntoIter<std::net::SocketAddr>>,
 }
 
 impl Server {

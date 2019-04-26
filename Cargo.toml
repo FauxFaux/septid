@@ -10,16 +10,18 @@ byteorder = "1"
 cast = "0.2"
 crypto-mac = "0.7"
 digest = "0.8"
-getopts = "0.2"
 getrandom = "0.1"
 log = "0.4"
 mio = "0.6"
-pretty_env_logger = "0.3"
+mio-extras = "2"
 sha2 = "0.8"
 hmac = "0.7"
 num-bigint = "0.2"
 num-traits = "0.2"
 subtle = "2"
+
+
+# fiddled dependencies
 
 [dependencies.failure]
 # features -= failure_derive (big dependencies)
@@ -41,3 +43,29 @@ default-features = false
 # features -= zeroize_derive (buggy in 0.6)
 features = ["std"]
 version = "0.6"
+
+
+# cli deps
+
+[dependencies.clap]
+optional = true
+version = "2.33"
+
+[dependencies.getopts]
+optional = true
+version = "0.2"
+
+[dependencies.pretty_env_logger]
+optional = true
+version = "0.3"
+
+
+[features]
+default = ["signals"]
+cli = ["clap", "getopts", "pretty_env_logger"]
+signals = []
+
+
+[[bin]]
+name = "septid"
+required-features = ["cli"]
