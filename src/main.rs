@@ -155,9 +155,7 @@ fn main() -> Result<(), Error> {
 
                     let initiated = TcpStream::connect(&addrs.next().expect("non-empty cycle"))?;
 
-                    let our_nonce = Nonce::random()?;
-
-                    let (plain, encrypted) = if encrypt {
+                    let (plain, encrypted) = if server.encrypt {
                         (accepted, initiated)
                     } else {
                         (initiated, accepted)
@@ -176,6 +174,8 @@ fn main() -> Result<(), Error> {
                         encrypted_token.0, plain_token.0, from
                     );
 
+                    let our_nonce = Nonce::random()?;
+                    let our_x = XParam::random()?;
                     encrypted.write_all(&our_nonce.0)?;
 
                     encrypted.reregister(&poll)?;
@@ -190,7 +190,7 @@ fn main() -> Result<(), Error> {
                             packet_number_decrypt: 0,
                             crypto: Crypto::NonceSent {
                                 our_nonce,
-                                our_x: XParam::random()?,
+                                our_x,
                             },
                         },
                     );
@@ -219,7 +219,7 @@ fn main() -> Result<(), Error> {
                 client => {
                     debug!("event client:{}", client.0);
                     if let Some(conn) = server.clients.get_mut(&round_down(client)) {
-                        duplify(&key, decrypt, conn)?;
+                        duplify(&key, !server.encrypt, conn)?;
                         conn.encrypted.reregister(&poll)?;
                         conn.plain.reregister(&poll)?;
                     }
