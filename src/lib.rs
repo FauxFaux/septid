@@ -201,65 +201,64 @@ fn round_down(value: Token) -> Token {
 }
 
 fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn, poll: &mio::Poll) -> Result<(), Error> {
-    loop {
-        match &mut conn.crypto {
-            Crypto::NonceSent { our_nonce, our_x } => {
-                let other_nonce = match conn.encrypted.read_exact(Nonce::BYTES)? {
-                    Some(nonce) => Nonce::from_slice(&nonce),
-                    None => return Ok(()),
-                };
+    match &mut conn.crypto {
+        Crypto::NonceSent { our_nonce, our_x } => {
+            let other_nonce = match conn.encrypted.read_exact(Nonce::BYTES)? {
+                Some(nonce) => Nonce::from_slice(&nonce),
+                None => return Ok(()),
+            };
 
-                let (response, nonces, their_dh_mac_key) =
-                    crypto::generate_y_reply(key, &other_nonce, decrypt, our_nonce, our_x)?;
+            let (response, nonces, their_dh_mac_key) =
+                crypto::generate_y_reply(key, &other_nonce, decrypt, our_nonce, our_x)?;
 
-                conn.encrypted.write_all(&response)?;
-                conn.encrypted.reregister(&poll)?;
+            conn.encrypted.write_all(&response)?;
+            conn.encrypted.reregister(&poll)?;
 
-                conn.crypto = Crypto::NonceReceived {
-                    nonces,
-                    our_x: our_x.clone(),
-                    their_dh_mac_key,
-                };
-            }
-            Crypto::NonceReceived {
+            conn.crypto = Crypto::NonceReceived {
                 nonces,
-                our_x,
+                our_x: our_x.clone(),
                 their_dh_mac_key,
-            } => {
-                let y_h = match conn.encrypted.read_exact(Y_H_LEN)? {
-                    Some(y_h) => y_h,
-                    None => return Ok(()),
-                };
+            };
+        }
+        Crypto::NonceReceived {
+            nonces,
+            our_x,
+            their_dh_mac_key,
+        } => {
+            let y_h = match conn.encrypted.read_exact(Y_H_LEN)? {
+                Some(y_h) => y_h,
+                None => return Ok(()),
+            };
 
-                let (client, server) =
-                    crypto::y_h_to_keys(key, their_dh_mac_key, our_x, nonces, &y_h)?;
+            let (client, server) = crypto::y_h_to_keys(key, their_dh_mac_key, our_x, nonces, &y_h)?;
 
-                // BORROW CHECKER
-                drop(y_h);
+            // BORROW CHECKER
+            drop(y_h);
 
-                conn.encrypted.reregister(&poll)?;
-                conn.plain.reregister(&poll)?;
+            conn.encrypted.reregister(&poll)?;
+            conn.plain.reregister(&poll)?;
 
-                conn.crypto = if decrypt {
-                    Crypto::Done {
-                        decrypt: server,
-                        encrypt: client,
-                    }
-                } else {
-                    Crypto::Done {
-                        decrypt: client,
-                        encrypt: server,
-                    }
+            conn.crypto = if decrypt {
+                Crypto::Done {
+                    decrypt: server,
+                    encrypt: client,
+                }
+            } else {
+                Crypto::Done {
+                    decrypt: client,
+                    encrypt: server,
                 }
             }
-            Crypto::Done { decrypt, encrypt } => {
-                while stream::decrypt_packet(decrypt, &mut conn.encrypted, &mut conn.plain)? {}
-                while stream::encrypt_packet(encrypt, &mut conn.plain, &mut conn.encrypted)? {}
-                conn.encrypted.reregister(&poll)?;
-                conn.plain.reregister(&poll)?;
-            }
         }
-    }
+        Crypto::Done { decrypt, encrypt } => {
+            while stream::decrypt_packet(decrypt, &mut conn.encrypted, &mut conn.plain)? {}
+            while stream::encrypt_packet(encrypt, &mut conn.plain, &mut conn.encrypted)? {}
+            conn.encrypted.reregister(&poll)?;
+            conn.plain.reregister(&poll)?;
+        }
+    };
+
+    Ok(())
 }
 
 struct Server {
