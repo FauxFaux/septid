@@ -42,8 +42,11 @@ pub enum Command {
     Terminate,
 }
 
-pub fn start_server(config: &StartServer) -> Result<(), Error> {
-    const COMMANDS: Token = Token(1);
+const COMMANDS: Token = Token(1);
+
+pub fn start_server(
+    config: &StartServer,
+) -> Result<(Server, mio_channel::SyncSender<Command>), Error> {
     let mut start_token = 2;
 
     let mut sources = HashMap::with_capacity(8);
@@ -72,7 +75,7 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
 
     let (command_send, command_recv) = mio_extras::channel::sync_channel::<Command>(1);
 
-    let mut server = Server {
+    let server = Server {
         key: config.key.clone(),
         encrypt: config.encrypt,
         clients: HashMap::with_capacity(100),
@@ -80,10 +83,11 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
         next_token: start_token,
         target_addrs,
         command_recv,
+        poll: mio::Poll::new()?,
+        events: mio::Events::with_capacity(32),
     };
 
-    let poll = mio::Poll::new()?;
-    poll.register(
+    server.poll.register(
         &server.command_recv,
         COMMANDS,
         mio::Ready::readable(),
@@ -91,75 +95,76 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
     )?;
 
     for (token, socket) in &server.sources {
-        poll.register(socket, *token, mio::Ready::readable(), mio::PollOpt::edge())?;
+        server
+            .poll
+            .register(socket, *token, mio::Ready::readable(), mio::PollOpt::edge())?;
     }
 
-    let mut events = mio::Events::with_capacity(32);
-    'app: loop {
-        poll.poll(&mut events, None)?;
-        for event in &events {
-            let token = event.token();
-            if COMMANDS == token {
-                while let Ok(command) = server.command_recv.try_recv() {
-                    match command {
-                        Command::NoNewConnections => server.sources.clear(),
-                        Command::Terminate => break 'app,
-                    }
+    Ok((server, command_send))
+}
+
+pub fn tick(server: &mut Server) -> Result<(), Error> {
+    server.poll.poll(&mut server.events, None)?;
+    for event in server.events.iter().collect::<Vec<_>>() {
+        let token = event.token();
+        if COMMANDS == token {
+            while let Ok(command) = server.command_recv.try_recv() {
+                match command {
+                    Command::NoNewConnections => server.sources.clear(),
+                    Command::Terminate => return Ok(()),
                 }
-            }
-
-            if let Some(source) = server.sources.get_mut(&token) {
-                if !event.readiness().is_readable() {
-                    continue;
-                }
-                let (accepted, from) = source.accept()?;
-
-                let initiated =
-                    TcpStream::connect(&server.target_addrs.next().expect("non-empty cycle"))?;
-
-                let (plain, encrypted) = if server.encrypt {
-                    (accepted, initiated)
-                } else {
-                    (initiated, accepted)
-                };
-
-                let (encrypted_token, plain_token) = server.token_pair();
-
-                let mut encrypted = stream::Stream::new(encrypted, encrypted_token);
-                encrypted.initial_registration(&poll)?;
-
-                let mut plain = stream::Stream::new(plain, plain_token);
-                plain.initial_registration(&poll)?;
-
-                debug!(
-                    "connection enc:{} plain:{} addr:{}",
-                    encrypted_token.0, plain_token.0, from
-                );
-
-                let our_nonce = Nonce::random()?;
-                let our_x = XParam::random()?;
-                encrypted.write_all(&our_nonce.0)?;
-
-                encrypted.reregister(&poll)?;
-                plain.reregister(&poll)?;
-
-                server.clients.insert(
-                    encrypted_token,
-                    Conn {
-                        encrypted,
-                        plain,
-                        crypto: Crypto::NonceSent { our_nonce, our_x },
-                    },
-                );
-            }
-
-            if let Some(conn) = server.clients.get_mut(&round_down(token)) {
-                duplify(&server.key, !server.encrypt, conn, &poll)?;
             }
         }
-    }
 
-    println!("done");
+        if let Some(source) = server.sources.get_mut(&token) {
+            if !event.readiness().is_readable() {
+                continue;
+            }
+            let (accepted, from) = source.accept()?;
+
+            let initiated =
+                TcpStream::connect(&server.target_addrs.next().expect("non-empty cycle"))?;
+
+            let (plain, encrypted) = if server.encrypt {
+                (accepted, initiated)
+            } else {
+                (initiated, accepted)
+            };
+
+            let (encrypted_token, plain_token) = server.token_pair();
+
+            let mut encrypted = stream::Stream::new(encrypted, encrypted_token);
+            encrypted.initial_registration(&server.poll)?;
+
+            let mut plain = stream::Stream::new(plain, plain_token);
+            plain.initial_registration(&server.poll)?;
+
+            debug!(
+                "connection enc:{} plain:{} addr:{}",
+                encrypted_token.0, plain_token.0, from
+            );
+
+            let our_nonce = Nonce::random()?;
+            let our_x = XParam::random()?;
+            encrypted.write_all(&our_nonce.0)?;
+
+            encrypted.reregister(&server.poll)?;
+            plain.reregister(&server.poll)?;
+
+            server.clients.insert(
+                encrypted_token,
+                Conn {
+                    encrypted,
+                    plain,
+                    crypto: Crypto::NonceSent { our_nonce, our_x },
+                },
+            );
+        }
+
+        if let Some(conn) = server.clients.get_mut(&round_down(token)) {
+            duplify(&server.key, !server.encrypt, conn, &server.poll)?;
+        }
+    }
 
     Ok(())
 }
@@ -230,7 +235,7 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn, poll: &mio::Poll) ->
     Ok(())
 }
 
-struct Server {
+pub struct Server {
     key: MasterKey,
     encrypt: bool,
     sources: HashMap<Token, TcpListener>,
@@ -238,6 +243,8 @@ struct Server {
     next_token: usize,
     target_addrs: std::iter::Cycle<std::vec::IntoIter<std::net::SocketAddr>>,
     command_recv: mio_channel::Receiver<Command>,
+    poll: mio::Poll,
+    events: mio::Events,
 }
 
 impl Server {

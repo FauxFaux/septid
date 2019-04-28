@@ -70,10 +70,14 @@ fn main() -> Result<(), failure::Error> {
 
     getrandom(&mut [0u8; 1]).with_context(|_| err_msg("warming up random numbers"))?;
 
-    septid::start_server(&septid::StartServer {
+    let (mut server, command) = septid::start_server(&septid::StartServer {
         bind_address: vec![addr],
         encrypt,
         key,
         target_address: vec![target],
-    })
+    })?;
+
+    loop {
+        septid::tick(&mut server)?;
+    }
 }
