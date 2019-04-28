@@ -16,6 +16,7 @@ mod named_array;
 mod stream;
 
 pub use crypto::load_key;
+use std::sync::mpsc::TryRecvError;
 
 named_array!(MasterKey, 256);
 
@@ -34,6 +35,11 @@ pub struct StartServer {
     pub bind_address: Vec<String>,
     pub target_address: Vec<String>,
     pub encrypt: bool,
+}
+
+pub enum Command {
+    NoNewConnections,
+    Terminate,
 }
 
 pub fn start_server(config: &StartServer) -> Result<(), Error> {
@@ -59,13 +65,23 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
         target_addrs,
     };
 
+    let (command_send, command_recv) = mio_extras::channel::sync_channel::<Command>(1);
+
     let signals =
         signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
 
-    const SERVER: Token = Token(1);
-    const SIGNALS: Token = Token(2);
+    const COMMANDS: Token = Token(1);
+    const SERVER: Token = Token(2);
+    const SIGNALS: Token = Token(3);
 
     let poll = mio::Poll::new()?;
+    poll.register(
+        &command_recv,
+        COMMANDS,
+        mio::Ready::readable(),
+        mio::PollOpt::edge(),
+    )?;
+
     poll.register(
         server.source.as_ref().unwrap(),
         SERVER,
@@ -85,6 +101,14 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
         poll.poll(&mut events, None)?;
         for event in &events {
             match event.token() {
+                COMMANDS => {
+                    while let Ok(command) = command_recv.try_recv() {
+                        match command {
+                            Command::NoNewConnections => drop(server.source.take()),
+                            Command::Terminate => break 'app,
+                        }
+                    }
+                }
                 SERVER => {
                     if !event.readiness().is_readable() {
                         continue;
