@@ -3,13 +3,9 @@ use std::io;
 use crypto_mac::Mac;
 use failure::ensure;
 use failure::Error;
-use hmac::Hmac;
 use num_bigint::BigUint;
-use sha2::Sha256;
-use subtle::Choice;
 use subtle::ConstantTimeEq;
 
-use super::named_array;
 use super::BothNonces;
 use super::EncKey;
 use super::MacKey;
@@ -19,28 +15,6 @@ use super::XParam;
 use super::YParam;
 use super::Y_H_LEN;
 use crate::SessionCrypto;
-
-// TODO: maybe don't use the macro, so we don't pay the drop cost
-named_array!(MacResult, 256);
-
-impl ConstantTimeEq for MacResult {
-    fn ct_eq(&self, other: &Self) -> Choice {
-        self.0.ct_eq(&other.0)
-    }
-}
-
-impl MacResult {
-    /// Prefer `ct_eq`
-    pub fn code(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-pub fn mac(key: &super::MacKey, data: &[u8]) -> MacResult {
-    let mut hmac = Hmac::<Sha256>::new_varkey(&key.0).expect("all keys are valid for hmac");
-    hmac.input(data);
-    MacResult::from_slice(&hmac.result().code())
-}
 
 pub fn generate_y_reply(
     key: &MasterKey,
@@ -66,6 +40,12 @@ pub fn generate_y_reply(
     let dh_mac_client = MacKey::from_slice(&double_dk[..32]);
     let dh_mac_server = MacKey::from_slice(&double_dk[32..]);
 
+    let (dh_mac_ours, dh_mac_theirs) = if decrypt {
+        (dh_mac_server, dh_mac_client)
+    } else {
+        (dh_mac_client, dh_mac_server)
+    };
+
     let two = BigUint::from(2u8);
 
     // TODO: constant time
@@ -78,27 +58,18 @@ pub fn generate_y_reply(
     let our_y = our_y.to_bytes_be();
     assert_eq!(YParam::BYTES, our_y.len(), "short y");
 
-    let y_mac = mac(
-        if decrypt {
-            &dh_mac_server
-        } else {
-            &dh_mac_client
-        },
-        &our_y,
-    );
+    let y_mac = {
+        let mut computer = dh_mac_ours.begin();
+        computer.input(&our_y);
+        computer.result().code()
+    };
 
     let mut response = [0u8; Y_H_LEN];
 
     response[..YParam::BYTES].copy_from_slice(&our_y);
-    response[YParam::BYTES..].copy_from_slice(&y_mac.code());
+    response[YParam::BYTES..].copy_from_slice(&y_mac);
 
-    let their_dh_mac_key = if decrypt {
-        dh_mac_client
-    } else {
-        dh_mac_server
-    };
-
-    Ok((response, nonces, their_dh_mac_key))
+    Ok((response, nonces, dh_mac_theirs))
 }
 
 pub fn y_h_to_keys(
@@ -110,9 +81,11 @@ pub fn y_h_to_keys(
 ) -> Result<(SessionCrypto, SessionCrypto), Error> {
     let (their_y, their_mac) = y_h.split_at(YParam::BYTES);
 
-    let their_mac = MacResult::from_slice(their_mac);
-
-    let expected_mac = mac(&their_dh_mac_key, their_y);
+    let expected_mac = {
+        let mut computer = their_dh_mac_key.begin();
+        computer.input(their_y);
+        computer.result().code()
+    };
     ensure!(expected_mac.ct_eq(&their_mac).unwrap_u8() == 1, "bad mac");
 
     let their_y = BigUint::from_bytes_be(their_y);

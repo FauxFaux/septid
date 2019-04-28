@@ -16,7 +16,6 @@ mod named_array;
 mod stream;
 
 pub use crypto::load_key;
-use crypto::MacResult;
 
 named_array!(MasterKey, 256);
 
@@ -28,7 +27,7 @@ named_array!(YParam, 2048);
 named_array!(EncKey, 256);
 named_array!(MacKey, 256);
 
-pub const Y_H_LEN: usize = YParam::BYTES + MacResult::BYTES;
+pub const Y_H_LEN: usize = YParam::BYTES + stream::PACKET_MAC_LEN;
 
 pub struct StartServer {
     pub key: MasterKey,
