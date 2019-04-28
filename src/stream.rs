@@ -23,14 +23,14 @@ const PACKET_MESSAGE_ENCRYPTED_LEN: usize = PACKET_MAX_MESSAGE_LEN + PACKET_MESS
 pub const PACKET_MAC_LEN: usize = 256 / 8; // 32
 const PACKET_LEN: usize = PACKET_MESSAGE_ENCRYPTED_LEN + PACKET_MAC_LEN;
 
-pub fn encrypt_stream(
+pub fn encrypt_packet(
     crypto: &mut SessionCrypto,
     from: &mut Stream,
     to: &mut Stream,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     fill_buffer_target(from, PACKET_MAX_MESSAGE_LEN)?;
     if from.read_buffer.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     debug!("encrypt from:{}", from.token.0);
@@ -62,19 +62,19 @@ pub fn encrypt_stream(
 
     debug!("encrypt-done from:{} len:{}", from.token.0, data_len);
 
-    Ok(())
+    Ok(true)
 }
 
-pub fn decrypt_stream(
+pub fn decrypt_packet(
     crypto: &mut SessionCrypto,
     from: &mut Stream,
     to: &mut Stream,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let token = from.token;
 
     let packet = match from.read_exact(PACKET_LEN)? {
         Some(packet) => packet,
-        None => return Ok(()),
+        None => return Ok(false),
     };
 
     debug!("decrypt from:{}", token.0);
@@ -118,7 +118,7 @@ pub fn decrypt_stream(
 
     to.write_all(&msg_encrypted[..actual_len])?;
 
-    Ok(())
+    Ok(true)
 }
 
 fn aes_ctr(crypto: &mut SessionCrypto, data: &mut [u8]) -> u64 {

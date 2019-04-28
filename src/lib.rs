@@ -159,9 +159,7 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
                 client => {
                     debug!("event client:{}", client.0);
                     if let Some(conn) = server.clients.get_mut(&round_down(client)) {
-                        duplify(&server.key, !server.encrypt, conn)?;
-                        conn.encrypted.reregister(&poll)?;
-                        conn.plain.reregister(&poll)?;
+                        duplify(&server.key, !server.encrypt, conn, &poll)?;
                     }
                 }
             }
@@ -178,19 +176,20 @@ fn round_down(value: Token) -> Token {
     Token(value.0 & !1)
 }
 
-fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
+fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn, poll: &mio::Poll) -> Result<(), Error> {
     loop {
         match &mut conn.crypto {
             Crypto::NonceSent { our_nonce, our_x } => {
                 let other_nonce = match conn.encrypted.read_exact(Nonce::BYTES)? {
                     Some(nonce) => Nonce::from_slice(&nonce),
-                    None => break,
+                    None => return Ok(()),
                 };
 
                 let (response, nonces, their_dh_mac_key) =
                     crypto::generate_y_reply(key, &other_nonce, decrypt, our_nonce, our_x)?;
 
                 conn.encrypted.write_all(&response)?;
+                conn.encrypted.reregister(&poll)?;
 
                 conn.crypto = Crypto::NonceReceived {
                     nonces,
@@ -205,11 +204,17 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
             } => {
                 let y_h = match conn.encrypted.read_exact(Y_H_LEN)? {
                     Some(y_h) => y_h,
-                    None => break,
+                    None => return Ok(()),
                 };
 
                 let (client, server) =
                     crypto::y_h_to_keys(key, their_dh_mac_key, our_x, nonces, &y_h)?;
+
+                // BORROW CHECKER
+                drop(y_h);
+
+                conn.encrypted.reregister(&poll)?;
+                conn.plain.reregister(&poll)?;
 
                 conn.crypto = if decrypt {
                     Crypto::Done {
@@ -224,17 +229,13 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 }
             }
             Crypto::Done { decrypt, encrypt } => {
-                stream::decrypt_stream(decrypt, &mut conn.encrypted, &mut conn.plain)?;
-                stream::encrypt_stream(encrypt, &mut conn.plain, &mut conn.encrypted)?;
-                break;
+                while stream::decrypt_packet(decrypt, &mut conn.encrypted, &mut conn.plain)? {}
+                while stream::encrypt_packet(encrypt, &mut conn.plain, &mut conn.encrypted)? {}
+                conn.encrypted.reregister(&poll)?;
+                conn.plain.reregister(&poll)?;
             }
         }
     }
-
-    stream::flush_buffer(&mut conn.encrypted)?;
-    stream::flush_buffer(&mut conn.plain)?;
-
-    Ok(())
 }
 
 struct Server {
