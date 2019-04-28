@@ -16,9 +16,9 @@ use mio::net::TcpStream;
 use subtle::ConstantTimeEq;
 
 use super::crypto::MacResult;
-use crate::crypto;
 use crate::EncKey;
 use crate::MacKey;
+use crate::{crypto, SessionCrypto};
 
 const PACKET_MAX_MESSAGE_LEN: usize = 1024;
 const PACKET_MESSAGE_LEN_LEN: usize = 4; // u32
@@ -27,10 +27,9 @@ const PACKET_MESSAGE_ENCRYPTED_LEN: usize = PACKET_MAX_MESSAGE_LEN + PACKET_MESS
 const PACKET_LEN: usize = PACKET_MESSAGE_ENCRYPTED_LEN + MacResult::BYTES;
 
 pub fn encrypt_stream(
-    (enc, mac): &(EncKey, MacKey),
+    crypto: &mut SessionCrypto,
     from: &mut Stream,
     to: &mut Stream,
-    packet_number: &mut u64,
 ) -> Result<(), Error> {
     fill_buffer_target(from, PACKET_MAX_MESSAGE_LEN)?;
     if from.read_buffer.is_empty() {
@@ -49,15 +48,18 @@ pub fn encrypt_stream(
         u32(data_len).expect("<1024"),
     );
 
-    BE::write_u64(&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..], *packet_number);
+    BE::write_u64(
+        &mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..],
+        crypto.packet_number,
+    );
     aes_ctr(
-        enc,
+        &crypto.enc,
         &mut packet[..PACKET_MESSAGE_ENCRYPTED_LEN],
-        packet_number,
+        &mut crypto.packet_number,
     );
 
     let data_to_mac = &packet[..PACKET_MESSAGE_ENCRYPTED_LEN + PACKET_PACKET_NUMBER_LEN];
-    let hash = crypto::mac(mac, data_to_mac);
+    let hash = crypto::mac(&crypto.mac, data_to_mac);
     (&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..]).copy_from_slice(&hash.code());
 
     to.write_all(&packet)?;
@@ -69,10 +71,9 @@ pub fn encrypt_stream(
 }
 
 pub fn decrypt_stream(
-    (enc, mac): &(EncKey, MacKey),
+    crypto: &mut SessionCrypto,
     from: &mut Stream,
     to: &mut Stream,
-    packet_number: &mut u64,
 ) -> Result<(), Error> {
     let token = from.token;
 
@@ -92,9 +93,9 @@ pub fn decrypt_stream(
 
     let mac_expected = {
         use crypto_mac::Mac;
-        let mut computer = mac.begin();
+        let mut computer = crypto.mac.begin();
         computer.input(msg_encrypted);
-        computer.input(&packet_number.to_be_bytes());
+        computer.input(&crypto.packet_number.to_be_bytes());
         computer.result().code()
     };
 
@@ -106,7 +107,7 @@ pub fn decrypt_stream(
     // TODO: eliminate this copy
     let mut msg_encrypted = msg_encrypted.to_vec();
 
-    aes_ctr(enc, &mut msg_encrypted, packet_number);
+    aes_ctr(&crypto.enc, &mut msg_encrypted, &mut crypto.packet_number);
 
     let actual_len = usize(BE::read_u32(&msg_encrypted[PACKET_MAX_MESSAGE_LEN..]));
     ensure!(

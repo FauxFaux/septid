@@ -18,6 +18,7 @@ use super::Nonce;
 use super::XParam;
 use super::YParam;
 use super::Y_H_LEN;
+use crate::SessionCrypto;
 
 // TODO: maybe don't use the macro, so we don't pay the drop cost
 named_array!(MacResult, 256);
@@ -106,7 +107,7 @@ pub fn y_h_to_keys(
     our_x: &XParam,
     nonces: &BothNonces,
     y_h: &[u8],
-) -> Result<((EncKey, MacKey), (EncKey, MacKey)), Error> {
+) -> Result<(SessionCrypto, SessionCrypto), Error> {
     let (their_y, their_mac) = y_h.split_at(YParam::BYTES);
 
     let their_mac = MacResult::from_slice(their_mac);
@@ -146,11 +147,12 @@ pub fn load_key<R: io::Read>(mut from: R) -> Result<MasterKey, Error> {
     Ok(MasterKey::from_slice(&ctx.fixed_result()))
 }
 
-fn two_keys(buf: &[u8]) -> (EncKey, MacKey) {
-    (
-        EncKey::from_slice(&buf[..EncKey::BYTES]),
-        MacKey::from_slice(&buf[EncKey::BYTES..]),
-    )
+fn two_keys(buf: &[u8]) -> SessionCrypto {
+    SessionCrypto {
+        enc: EncKey::from_slice(&buf[..EncKey::BYTES]),
+        mac: MacKey::from_slice(&buf[EncKey::BYTES..]),
+        packet_number: 0,
+    }
 }
 
 /// rfc3526 2048

@@ -132,8 +132,6 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
                         Conn {
                             encrypted,
                             plain,
-                            packet_number_encrypt: 0,
-                            packet_number_decrypt: 0,
                             crypto: Crypto::NonceSent { our_nonce, our_x },
                         },
                     );
@@ -183,7 +181,7 @@ fn round_down(value: Token) -> Token {
 
 fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error> {
     loop {
-        match &conn.crypto {
+        match &mut conn.crypto {
             Crypto::NonceSent { our_nonce, our_x } => {
                 let other_nonce = match conn.encrypted.read_exact(Nonce::BYTES)? {
                     Some(nonce) => Nonce::from_slice(&nonce),
@@ -227,18 +225,8 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn) -> Result<(), Error>
                 }
             }
             Crypto::Done { decrypt, encrypt } => {
-                stream::decrypt_stream(
-                    decrypt,
-                    &mut conn.encrypted,
-                    &mut conn.plain,
-                    &mut conn.packet_number_decrypt,
-                )?;
-                stream::encrypt_stream(
-                    encrypt,
-                    &mut conn.plain,
-                    &mut conn.encrypted,
-                    &mut conn.packet_number_encrypt,
-                )?;
+                stream::decrypt_stream(decrypt, &mut conn.encrypted, &mut conn.plain)?;
+                stream::encrypt_stream(encrypt, &mut conn.plain, &mut conn.encrypted)?;
                 break;
             }
         }
@@ -272,12 +260,9 @@ impl Server {
 struct Conn {
     plain: stream::Stream,
     encrypted: stream::Stream,
-    packet_number_encrypt: u64,
-    packet_number_decrypt: u64,
     crypto: Crypto,
 }
 
-#[derive(Clone)]
 enum Crypto {
     NonceSent {
         our_nonce: Nonce,
@@ -289,9 +274,15 @@ enum Crypto {
         their_dh_mac_key: MacKey,
     },
     Done {
-        decrypt: (EncKey, MacKey),
-        encrypt: (EncKey, MacKey),
+        decrypt: SessionCrypto,
+        encrypt: SessionCrypto,
     },
+}
+
+pub struct SessionCrypto {
+    enc: EncKey,
+    mac: MacKey,
+    packet_number: u64,
 }
 
 impl MacKey {
