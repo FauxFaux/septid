@@ -10,13 +10,13 @@ use log::debug;
 use mio::net::TcpListener;
 use mio::net::TcpStream;
 use mio::Token;
+use mio_extras::channel as mio_channel;
 
 mod crypto;
 mod named_array;
 mod stream;
 
 pub use crypto::load_key;
-use std::sync::mpsc::TryRecvError;
 
 named_array!(MasterKey, 256);
 
@@ -56,16 +56,17 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
         .next()
         .ok_or_else(|| err_msg("no resolution"))?;
 
+    let (command_send, command_recv) = mio_extras::channel::sync_channel::<Command>(1);
+
     let mut server = Server {
         key: config.key.clone(),
         encrypt: config.encrypt,
-        clients: HashMap::new(),
+        clients: HashMap::with_capacity(100),
         source: Some(source),
         next_token: 10,
         target_addrs,
+        command_recv,
     };
-
-    let (command_send, command_recv) = mio_extras::channel::sync_channel::<Command>(1);
 
     let signals =
         signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
@@ -76,7 +77,7 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
 
     let poll = mio::Poll::new()?;
     poll.register(
-        &command_recv,
+        &server.command_recv,
         COMMANDS,
         mio::Ready::readable(),
         mio::PollOpt::edge(),
@@ -102,7 +103,7 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
         for event in &events {
             match event.token() {
                 COMMANDS => {
-                    while let Ok(command) = command_recv.try_recv() {
+                    while let Ok(command) = server.command_recv.try_recv() {
                         match command {
                             Command::NoNewConnections => drop(server.source.take()),
                             Command::Terminate => break 'app,
@@ -268,6 +269,7 @@ struct Server {
     clients: HashMap<Token, Conn>,
     next_token: usize,
     target_addrs: std::iter::Cycle<std::vec::IntoIter<std::net::SocketAddr>>,
+    command_recv: mio_channel::Receiver<Command>,
 }
 
 impl Server {
