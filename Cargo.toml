@@ -34,10 +34,6 @@ version = "0.1"
 default-features = false
 version = "0.3"
 
-[dependencies.signal-hook]
-features = ["mio-support"]
-version = "0.1"
-
 [dependencies.zeroize]
 default-features = false
 # features -= zeroize_derive (buggy in 0.6)

@@ -2,7 +2,6 @@
 #![feature(vec_drain_as_slice)]
 
 use std::collections::HashMap;
-use std::mem;
 
 use failure::err_msg;
 use failure::Error;
@@ -68,12 +67,8 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
         command_recv,
     };
 
-    let signals =
-        signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
-
     const COMMANDS: Token = Token(1);
     const SERVER: Token = Token(2);
-    const SIGNALS: Token = Token(3);
 
     let poll = mio::Poll::new()?;
     poll.register(
@@ -86,13 +81,6 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
     poll.register(
         server.source.as_ref().unwrap(),
         SERVER,
-        mio::Ready::readable(),
-        mio::PollOpt::edge(),
-    )?;
-
-    poll.register(
-        &signals,
-        SIGNALS,
         mio::Ready::readable(),
         mio::PollOpt::edge(),
     )?;
@@ -159,27 +147,6 @@ pub fn start_server(config: &StartServer) -> Result<(), Error> {
                             crypto: Crypto::NonceSent { our_nonce, our_x },
                         },
                     );
-                }
-                SIGNALS => {
-                    // spurious wakeup, do nothing
-                    // do we need to consume the iterator (with .count), vs. just .next?
-                    if 0 == signals.pending().count() {
-                        continue;
-                    }
-
-                    match server.source.take() {
-                        // first time, drop the incoming connection
-                        Some(listen) => mem::drop(listen),
-                        // been here before, just cancel the whole app
-                        None => break 'app,
-                    };
-
-                    println!("no longer accepting new connections");
-                    println!("waiting for existing connections to terminate...");
-
-                    if server.clients.is_empty() {
-                        break 'app;
-                    }
                 }
                 client => {
                     debug!("event client:{}", client.0);
