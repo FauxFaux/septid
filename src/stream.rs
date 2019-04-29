@@ -35,12 +35,24 @@ pub fn encrypt_packet(
 
     let data_len = PACKET_MAX_MESSAGE_LEN.min(from.read_buffer.len());
     let input = &from.read_buffer[..data_len];
+
+    let packet = enpacket(crypto, input);
+
+    to.write_all(&packet)?;
+    from.read_buffer.drain(..data_len);
+
+    debug!("encrypt-done from:{} len:{}", from.token.0, data_len);
+
+    Ok(true)
+}
+
+fn enpacket(crypto: &mut SessionCrypto, input: &[u8]) -> [u8; PACKET_LEN] {
     let mut packet = [0u8; PACKET_LEN];
 
-    (&mut packet[..data_len]).copy_from_slice(input);
+    (&mut packet[..input.len()]).copy_from_slice(input);
     BE::write_u32(
         &mut packet[PACKET_MAX_MESSAGE_LEN..],
-        u32(data_len).expect("<1024"),
+        u32(input.len()).expect("<1024"),
     );
 
     let packet_number = aes_ctr(crypto, &mut packet[..PACKET_MESSAGE_ENCRYPTED_LEN]);
@@ -55,12 +67,7 @@ pub fn encrypt_packet(
 
     (&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..]).copy_from_slice(&mac);
 
-    to.write_all(&packet)?;
-    from.read_buffer.drain(..data_len);
-
-    debug!("encrypt-done from:{} len:{}", from.token.0, data_len);
-
-    Ok(true)
+    packet
 }
 
 pub fn decrypt_packet(
@@ -70,19 +77,29 @@ pub fn decrypt_packet(
 ) -> Result<bool, Error> {
     let token = from.token;
 
-    let packet = match from.read_exact(PACKET_LEN)? {
+    let mut packet = match from.read_exact(PACKET_LEN)? {
         Some(packet) => packet,
         None => return Ok(false),
     };
 
     debug!("decrypt from:{}", token.0);
 
+    let output = unpacket(crypto, packet.as_mut())?;
+
+    to.write_all(output)?;
+
+    Ok(true)
+}
+
+fn unpacket<'s, 'p>(
+    crypto: &'s mut SessionCrypto,
+    packet: &'p mut [u8],
+) -> Result<&'p [u8], Error> {
     //    msg_padded: [ message ] [ padded up to 1024 bytes ] [ length: 4 bytes ]
     // msg_encrypted: encrypt(msg_padded)
     //       payload: [ msg_encrypted ] [ mac([ msg_encrypted ] [ packet number: 8 bytes ]):
-
     // copy the mac out of the read buffer
-    let (msg_encrypted, mac_actual) = packet.as_ref().split_at(PACKET_MESSAGE_ENCRYPTED_LEN);
+    let (msg_encrypted, mac_actual) = packet.as_mut().split_at_mut(PACKET_MESSAGE_ENCRYPTED_LEN);
 
     let mac_expected = {
         use crypto_mac::Mac;
@@ -97,16 +114,15 @@ pub fn decrypt_packet(
         "packet mac bad"
     );
 
-    // TODO: eliminate this copy
-    let mut msg_encrypted = msg_encrypted.to_vec();
-
-    aes_ctr(crypto, &mut msg_encrypted);
+    aes_ctr(crypto, msg_encrypted);
 
     let actual_len = usize(BE::read_u32(&msg_encrypted[PACKET_MAX_MESSAGE_LEN..]));
+
     ensure!(
         actual_len != 0 && actual_len <= PACKET_MAX_MESSAGE_LEN,
         "invalid len"
     );
+
     ensure!(
         msg_encrypted[actual_len..PACKET_MAX_MESSAGE_LEN]
             .iter()
@@ -114,9 +130,7 @@ pub fn decrypt_packet(
         "invalid padding"
     );
 
-    to.write_all(&msg_encrypted[..actual_len])?;
-
-    Ok(true)
+    Ok(&msg_encrypted[..actual_len])
 }
 
 fn aes_ctr(crypto: &mut SessionCrypto, data: &mut [u8]) -> u64 {
