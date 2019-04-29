@@ -1,6 +1,3 @@
-// efficiency, could copy instead
-#![feature(vec_drain_as_slice)]
-
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
 
@@ -178,7 +175,7 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn, poll: &mio::Poll) ->
     match &mut conn.crypto {
         Crypto::NonceSent { our_nonce, our_x } => {
             let other_nonce = match conn.encrypted.read_exact(Nonce::BYTES)? {
-                Some(nonce) => Nonce::from_slice(&nonce),
+                Some(nonce) => Nonce::from_slice(nonce.as_ref()),
                 None => return Ok(()),
             };
 
@@ -204,7 +201,8 @@ fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn, poll: &mio::Poll) ->
                 None => return Ok(()),
             };
 
-            let (client, server) = crypto::y_h_to_keys(key, their_dh_mac_key, our_x, nonces, &y_h)?;
+            let (client, server) =
+                crypto::y_h_to_keys(key, their_dh_mac_key, our_x, nonces, y_h.as_ref())?;
 
             // BORROW CHECKER
             drop(y_h);

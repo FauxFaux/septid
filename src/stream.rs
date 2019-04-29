@@ -1,6 +1,4 @@
 use std::io;
-use std::ops;
-use std::vec;
 
 use aes_ctr::stream_cipher::NewStreamCipher;
 use aes_ctr::stream_cipher::SyncStreamCipher;
@@ -84,7 +82,7 @@ pub fn decrypt_packet(
     //       payload: [ msg_encrypted ] [ mac([ msg_encrypted ] [ packet number: 8 bytes ]):
 
     // copy the mac out of the read buffer
-    let (msg_encrypted, mac_actual) = packet.split_at(PACKET_MESSAGE_ENCRYPTED_LEN);
+    let (msg_encrypted, mac_actual) = packet.as_ref().split_at(PACKET_MESSAGE_ENCRYPTED_LEN);
 
     let mac_expected = {
         use crypto_mac::Mac;
@@ -244,7 +242,8 @@ impl Stream {
         }
 
         Ok(Some(ReadResult {
-            inner: self.read_buffer.drain(..len),
+            inner: &mut self.read_buffer,
+            len,
         }))
     }
 
@@ -255,13 +254,24 @@ impl Stream {
 }
 
 pub struct ReadResult<'v> {
-    inner: vec::Drain<'v, u8>,
+    inner: &'v mut Vec<u8>,
+    len: usize,
 }
 
-impl<'v> ops::Deref for ReadResult<'v> {
-    type Target = [u8];
+impl<'v> AsRef<[u8]> for ReadResult<'v> {
+    fn as_ref(&self) -> &[u8] {
+        &self.inner[..self.len]
+    }
+}
 
-    fn deref(&self) -> &[u8] {
-        self.inner.as_slice()
+impl<'v> AsMut<[u8]> for ReadResult<'v> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.inner[..self.len]
+    }
+}
+
+impl<'v> Drop for ReadResult<'v> {
+    fn drop(&mut self) {
+        self.inner.drain(..self.len);
     }
 }
