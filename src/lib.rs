@@ -100,7 +100,7 @@ pub fn start_server(
     Ok((server, command_send))
 }
 
-pub fn tick(server: &mut Server) -> Result<(), Error> {
+pub fn tick(server: &mut Server) -> Result<bool, Error> {
     server.poll.poll(&mut server.events, None)?;
     for event in server.events.iter().collect::<Vec<_>>() {
         let token = event.token();
@@ -108,7 +108,7 @@ pub fn tick(server: &mut Server) -> Result<(), Error> {
             while let Ok(command) = server.command_recv.try_recv() {
                 match command {
                     Command::NoNewConnections => server.sources.clear(),
-                    Command::Terminate => return Ok(()),
+                    Command::Terminate => return Ok(false),
                 }
             }
         }
@@ -163,7 +163,7 @@ pub fn tick(server: &mut Server) -> Result<(), Error> {
         }
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// 2 -> 2, 3 -> 2, 4 -> 4, 5 -> 4
