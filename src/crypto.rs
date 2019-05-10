@@ -54,9 +54,7 @@ pub fn generate_y_reply(
         &BigUint::from_bytes_be(&GROUP_14_PRIME.0),
     );
 
-    // TODO: pad to length
-    let our_y = our_y.to_bytes_be();
-    assert_eq!(YParam::BYTES, our_y.len(), "short y");
+    let our_y = to_bytes_be(&our_y, YParam::BYTES);
 
     let y_mac = {
         let mut computer = dh_mac_ours.begin();
@@ -92,10 +90,10 @@ pub fn y_h_to_keys(
     let prime = BigUint::from_bytes_be(&GROUP_14_PRIME.0);
     ensure!(their_y < prime, "bad y");
 
-    let shared = their_y
-        .modpow(&BigUint::from_bytes_be(&our_x.0), &prime)
-        .to_bytes_be();
-    assert_eq!(256, shared.len(), "short shared");
+    let shared = to_bytes_be(
+        &their_y.modpow(&BigUint::from_bytes_be(&our_x.0), &prime),
+        YParam::BYTES,
+    );
 
     let mut buf = Vec::with_capacity(32 + 32 + 256);
     buf.extend_from_slice(&nonces.0);
@@ -108,6 +106,19 @@ pub fn y_h_to_keys(
     let server = two_keys(&quad_dk[..64]);
 
     Ok((client, server))
+}
+
+fn to_bytes_be(num: &BigUint, len: usize) -> Vec<u8> {
+    // take the LE format, extend it, then reverse; performance hack!
+
+    let mut val = num.to_bytes_le();
+
+    while val.len() < len {
+        val.push(0);
+    }
+
+    val.reverse();
+    val
 }
 
 pub fn load_key<R: io::Read>(mut from: R) -> Result<MasterKey, Error> {
