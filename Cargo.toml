@@ -65,3 +65,6 @@ signals = []
 [[bin]]
 name = "septid"
 required-features = ["cli"]
+
+[profile.release]
+lto = true

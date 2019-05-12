@@ -11,6 +11,7 @@ use mio_extras::channel as mio_channel;
 
 mod crypto;
 mod named_array;
+mod packet;
 mod stream;
 
 pub use crypto::load_key;
