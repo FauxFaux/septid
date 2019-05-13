@@ -160,7 +160,7 @@ pub fn tick(server: &mut Server) -> Result<bool, Error> {
         }
 
         if let Some(conn) = server.clients.get_mut(&round_down(token)) {
-            duplify(&server.key, !server.encrypt, conn, &server.poll)?;
+            handle_client(&server.key, !server.encrypt, conn, &server.poll)?;
         }
     }
 
@@ -172,7 +172,7 @@ fn round_down(value: Token) -> Token {
     Token(value.0 & !1)
 }
 
-fn duplify(key: &MasterKey, decrypt: bool, conn: &mut Conn, poll: &mio::Poll) -> Result<(), Error> {
+fn handle_client(key: &MasterKey, decrypt: bool, conn: &mut Conn, poll: &mio::Poll) -> Result<(), Error> {
     match &mut conn.crypto {
         Crypto::NonceSent { our_nonce, our_x } => {
             let other_nonce = match conn.encrypted.read_exact(Nonce::BYTES)? {

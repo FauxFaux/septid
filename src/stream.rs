@@ -79,7 +79,7 @@ fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), io::Erro
     Ok(())
 }
 
-pub fn flush_buffer(stream: &mut Stream) -> Result<(), io::Error> {
+fn flush_buffer(stream: &mut Stream) -> Result<(), io::Error> {
     let Stream {
         write_buffer: buf,
         inner: sock,
@@ -174,7 +174,7 @@ impl Stream {
     }
 }
 
-pub struct ReadResult<'v> {
+struct ReadResult<'v> {
     inner: &'v mut Vec<u8>,
     len: usize,
 }
