@@ -174,7 +174,7 @@ impl Stream {
     }
 }
 
-struct ReadResult<'v> {
+pub struct ReadResult<'v> {
     inner: &'v mut Vec<u8>,
     len: usize,
 }

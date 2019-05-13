@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net;
 use std::net::ToSocketAddrs;
 
 use failure::err_msg;
@@ -118,45 +119,20 @@ pub fn tick(server: &mut Server) -> Result<bool, Error> {
             if !event.readiness().is_readable() {
                 continue;
             }
+
             let (accepted, from) = source.accept()?;
 
-            let initiated =
-                TcpStream::connect(&server.target_addrs.next().expect("non-empty cycle"))?;
+            let (token, conn) = handle_accept(
+                accepted,
+                &server.target_addrs.next().expect("non-empty cycle"),
+                server.token_pair(),
+                &server.poll,
+                server.encrypt,
+            )?;
 
-            let (plain, encrypted) = if server.encrypt {
-                (accepted, initiated)
-            } else {
-                (initiated, accepted)
-            };
+            debug!("connection enc:{} addr:{}", token.0, from);
 
-            let (encrypted_token, plain_token) = server.token_pair();
-
-            let mut encrypted = stream::Stream::new(encrypted, encrypted_token);
-            encrypted.initial_registration(&server.poll)?;
-
-            let mut plain = stream::Stream::new(plain, plain_token);
-            plain.initial_registration(&server.poll)?;
-
-            debug!(
-                "connection enc:{} plain:{} addr:{}",
-                encrypted_token.0, plain_token.0, from
-            );
-
-            let our_nonce = Nonce::random()?;
-            let our_x = XParam::random()?;
-            encrypted.write_all(&our_nonce.0)?;
-
-            encrypted.reregister(&server.poll)?;
-            plain.reregister(&server.poll)?;
-
-            server.clients.insert(
-                encrypted_token,
-                Conn {
-                    encrypted,
-                    plain,
-                    crypto: Crypto::NonceSent { our_nonce, our_x },
-                },
-            );
+            server.clients.insert(token, conn);
         }
 
         if let Some(conn) = server.clients.get_mut(&round_down(token)) {
@@ -167,12 +143,54 @@ pub fn tick(server: &mut Server) -> Result<bool, Error> {
     Ok(true)
 }
 
+fn handle_accept(
+    accepted: TcpStream,
+    target_addr: &net::SocketAddr,
+    (encrypted_token, plain_token): (Token, Token),
+    poll: &mio::Poll,
+    encrypt: bool,
+) -> Result<(Token, Conn), Error> {
+    let initiated = TcpStream::connect(&target_addr)?;
+
+    let (plain, encrypted) = if encrypt {
+        (accepted, initiated)
+    } else {
+        (initiated, accepted)
+    };
+
+    let mut encrypted = stream::Stream::new(encrypted, encrypted_token);
+    encrypted.initial_registration(poll)?;
+
+    let mut plain = stream::Stream::new(plain, plain_token);
+    plain.initial_registration(poll)?;
+
+    let our_nonce = Nonce::random()?;
+    let our_x = XParam::random()?;
+    encrypted.write_all(&our_nonce.0)?;
+
+    encrypted.reregister(poll)?;
+
+    Ok((
+        encrypted_token,
+        Conn {
+            encrypted,
+            plain,
+            crypto: Crypto::NonceSent { our_nonce, our_x },
+        },
+    ))
+}
+
 /// 2 -> 2, 3 -> 2, 4 -> 4, 5 -> 4
 fn round_down(value: Token) -> Token {
     Token(value.0 & !1)
 }
 
-fn handle_client(key: &MasterKey, decrypt: bool, conn: &mut Conn, poll: &mio::Poll) -> Result<(), Error> {
+fn handle_client(
+    key: &MasterKey,
+    decrypt: bool,
+    conn: &mut Conn,
+    poll: &mio::Poll,
+) -> Result<(), Error> {
     match &mut conn.crypto {
         Crypto::NonceSent { our_nonce, our_x } => {
             let other_nonce = match conn.encrypted.read_exact(Nonce::BYTES)? {
