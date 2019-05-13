@@ -3,11 +3,14 @@ use std::convert::TryInto;
 
 use subtle::ConstantTimeEq;
 
-use super::stream::aes_ctr;
-use super::stream::PACKET_LEN;
-use super::stream::PACKET_MAX_MESSAGE_LEN;
-use super::stream::PACKET_MESSAGE_ENCRYPTED_LEN;
+use super::crypto;
 use super::SessionCrypto;
+
+pub const PACKET_MAX_MESSAGE_LEN: usize = 1024;
+const PACKET_MESSAGE_LEN_LEN: usize = 4; // u32
+const PACKET_MESSAGE_ENCRYPTED_LEN: usize = PACKET_MAX_MESSAGE_LEN + PACKET_MESSAGE_LEN_LEN;
+pub const PACKET_MAC_LEN: usize = 256 / 8; // 32
+pub const PACKET_LEN: usize = PACKET_MESSAGE_ENCRYPTED_LEN + PACKET_MAC_LEN;
 
 pub fn enpacket(crypto: &mut SessionCrypto, input: &[u8]) -> [u8; PACKET_LEN] {
     assert!(input.len() <= PACKET_MAX_MESSAGE_LEN);
@@ -19,7 +22,7 @@ pub fn enpacket(crypto: &mut SessionCrypto, input: &[u8]) -> [u8; PACKET_LEN] {
     packet[PACKET_MAX_MESSAGE_LEN..PACKET_MESSAGE_ENCRYPTED_LEN]
         .copy_from_slice(&input_len.to_be_bytes());
 
-    let packet_number = aes_ctr(crypto, &mut packet[..PACKET_MESSAGE_ENCRYPTED_LEN]);
+    let packet_number = crypto::aes_ctr(crypto, &mut packet[..PACKET_MESSAGE_ENCRYPTED_LEN]);
 
     let mac = {
         use crypto_mac::Mac;
@@ -58,7 +61,7 @@ pub fn unpacket<'s, 'p>(
         return Err("packet mac bad");
     }
 
-    aes_ctr(crypto, msg_encrypted);
+    crypto::aes_ctr(crypto, msg_encrypted);
 
     let actual_len = u32::from_be_bytes(
         msg_encrypted[PACKET_MAX_MESSAGE_LEN..]

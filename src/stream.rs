@@ -1,10 +1,5 @@
 use std::io;
 
-use aes_ctr::stream_cipher::NewStreamCipher;
-use aes_ctr::stream_cipher::SyncStreamCipher;
-use aes_ctr::Aes256Ctr;
-use byteorder::ByteOrder;
-use byteorder::BE;
 use failure::Error;
 use log::debug;
 use mio::net::TcpStream;
@@ -12,25 +7,19 @@ use mio::net::TcpStream;
 use crate::packet;
 use crate::SessionCrypto;
 
-pub const PACKET_MAX_MESSAGE_LEN: usize = 1024;
-pub const PACKET_MESSAGE_LEN_LEN: usize = 4; // u32
-pub const PACKET_MESSAGE_ENCRYPTED_LEN: usize = PACKET_MAX_MESSAGE_LEN + PACKET_MESSAGE_LEN_LEN;
-pub const PACKET_MAC_LEN: usize = 256 / 8; // 32
-pub const PACKET_LEN: usize = PACKET_MESSAGE_ENCRYPTED_LEN + PACKET_MAC_LEN;
-
 pub fn encrypt_packet(
     crypto: &mut SessionCrypto,
     from: &mut Stream,
     to: &mut Stream,
 ) -> Result<bool, Error> {
-    fill_buffer_target(from, PACKET_MAX_MESSAGE_LEN)?;
+    fill_buffer_target(from, packet::PACKET_MAX_MESSAGE_LEN)?;
     if from.read_buffer.is_empty() {
         return Ok(false);
     }
 
     debug!("encrypt from:{}", from.token.0);
 
-    let data_len = PACKET_MAX_MESSAGE_LEN.min(from.read_buffer.len());
+    let data_len = packet::PACKET_MAX_MESSAGE_LEN.min(from.read_buffer.len());
     let input = &from.read_buffer[..data_len];
 
     let packet = packet::enpacket(crypto, input);
@@ -50,7 +39,7 @@ pub fn decrypt_packet(
 ) -> Result<bool, Error> {
     let token = from.token;
 
-    let mut packet = match from.read_exact(PACKET_LEN)? {
+    let mut packet = match from.read_exact(packet::PACKET_LEN)? {
         Some(packet) => packet,
         None => return Ok(false),
     };
@@ -62,19 +51,6 @@ pub fn decrypt_packet(
     to.write_all(output)?;
 
     Ok(true)
-}
-
-pub fn aes_ctr(crypto: &mut SessionCrypto, data: &mut [u8]) -> u64 {
-    let number_to_use = crypto.packet_number;
-    crypto.packet_number += 1;
-
-    let mut nonce = [0u8; 16];
-    BE::write_u64(&mut nonce[..8], number_to_use);
-
-    let mut cipher = Aes256Ctr::new_var(&crypto.enc.0[..], &nonce).expect("length from arrays");
-    cipher.apply_keystream(data);
-
-    number_to_use
 }
 
 fn fill_buffer_target(stream: &mut Stream, target: usize) -> Result<(), io::Error> {
@@ -164,7 +140,7 @@ impl Stream {
     }
 
     pub fn reregister(&self, poll: &mio::Poll) -> Result<(), io::Error> {
-        let read = self.read_buffer.len() < PACKET_LEN;
+        let read = self.read_buffer.len() < packet::PACKET_LEN;
         let write = !self.write_buffer.is_empty();
 
         let mut interest = mio::Ready::empty();
