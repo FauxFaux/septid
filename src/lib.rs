@@ -106,16 +106,17 @@ pub fn tick(server: &mut Server) -> Result<bool, Error> {
     server.poll.poll(&mut server.events, None)?;
     for event in server.events.iter().collect::<Vec<_>>() {
         let token = event.token();
-        if COMMANDS == token {
+
+        if let Some(conn) = server.clients.get_mut(&round_down(token)) {
+            handle_client(&server.key, !server.encrypt, conn, &server.poll)?;
+        } else if COMMANDS == token {
             while let Ok(command) = server.command_recv.try_recv() {
                 match command {
                     Command::NoNewConnections => server.sources.clear(),
                     Command::Terminate => return Ok(false),
                 }
             }
-        }
-
-        if let Some(source) = server.sources.get_mut(&token) {
+        } else if let Some(source) = server.sources.get_mut(&token) {
             if !event.readiness().is_readable() {
                 continue;
             }
@@ -133,10 +134,8 @@ pub fn tick(server: &mut Server) -> Result<bool, Error> {
             debug!("connection enc:{} addr:{}", token.0, from);
 
             server.clients.insert(token, conn);
-        }
-
-        if let Some(conn) = server.clients.get_mut(&round_down(token)) {
-            handle_client(&server.key, !server.encrypt, conn, &server.poll)?;
+        } else {
+            debug!("unexpected-event token:{}", token.0);
         }
     }
 
