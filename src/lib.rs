@@ -152,11 +152,7 @@ fn handle_accept(
 ) -> Result<(Token, Conn), Error> {
     let initiated = TcpStream::connect(&target_addr)?;
 
-    let (plain, encrypted) = if encrypt {
-        (accepted, initiated)
-    } else {
-        (initiated, accepted)
-    };
+    let (plain, encrypted) = flip_if(encrypt, initiated, accepted);
 
     let mut encrypted = stream::Stream::new(encrypted, encrypted_token);
     encrypted.initial_registration(poll)?;
@@ -180,6 +176,14 @@ fn handle_accept(
     ))
 }
 
+fn flip_if<T>(flip: bool, left: T, right: T) -> (T, T) {
+    if flip {
+        (right, left)
+    } else {
+        (left, right)
+    }
+}
+
 /// 2 -> 2, 3 -> 2, 4 -> 4, 5 -> 4
 fn round_down(value: Token) -> Token {
     Token(value.0 & !1)
@@ -199,7 +203,7 @@ fn handle_client(
             };
 
             let (response, nonces, their_dh_mac_key) =
-                crypto::generate_y_reply(key, &other_nonce, decrypt, our_nonce, our_x)?;
+                crypto::generate_y_reply(key, our_nonce, &other_nonce, decrypt, our_x)?;
 
             conn.encrypted.write_all(&response)?;
             conn.encrypted.reregister(&poll)?;
@@ -229,17 +233,9 @@ fn handle_client(
             conn.encrypted.reregister(&poll)?;
             conn.plain.reregister(&poll)?;
 
-            conn.crypto = if decrypt {
-                Crypto::Done {
-                    decrypt: server,
-                    encrypt: client,
-                }
-            } else {
-                Crypto::Done {
-                    decrypt: client,
-                    encrypt: server,
-                }
-            }
+            let (decrypt, encrypt) = flip_if(decrypt, server, client);
+
+            conn.crypto = Crypto::Done { decrypt, encrypt };
         }
         Crypto::Done { decrypt, encrypt } => {
             while stream::decrypt_packet(decrypt, &mut conn.encrypted, &mut conn.plain)? {}

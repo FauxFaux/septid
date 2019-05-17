@@ -23,16 +23,12 @@ use crate::SessionCrypto;
 
 pub fn generate_y_reply(
     key: &MasterKey,
+    our_nonce: &Nonce,
     other_nonce: &Nonce,
     decrypt: bool,
-    our_nonce: &Nonce,
     our_x: &XParam,
 ) -> Result<([u8; Y_H_LEN], BothNonces, MacKey), Error> {
-    let (client_nonce, server_nonce) = if decrypt {
-        (other_nonce, our_nonce)
-    } else {
-        (our_nonce, other_nonce)
-    };
+    let (client_nonce, server_nonce) = super::flip_if(decrypt, our_nonce, other_nonce);
 
     let mut nonces = [0u8; BothNonces::BYTES];
     nonces[..32].copy_from_slice(&client_nonce.0);
@@ -45,11 +41,7 @@ pub fn generate_y_reply(
     let dh_mac_client = MacKey::from_slice(&double_dk[..32]);
     let dh_mac_server = MacKey::from_slice(&double_dk[32..]);
 
-    let (dh_mac_ours, dh_mac_theirs) = if decrypt {
-        (dh_mac_server, dh_mac_client)
-    } else {
-        (dh_mac_client, dh_mac_server)
-    };
+    let (dh_mac_ours, dh_mac_theirs) = super::flip_if(decrypt, dh_mac_client, dh_mac_server);
 
     let two = BigUint::from(2u8);
 
