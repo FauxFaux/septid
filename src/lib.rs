@@ -16,6 +16,7 @@ mod crypto;
 mod kex;
 mod named_array;
 mod packet;
+mod send;
 mod stream;
 
 use crate::stream::decrypt_packets;
