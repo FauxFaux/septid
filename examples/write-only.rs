@@ -13,7 +13,7 @@ fn main() -> Result<(), Error> {
     let key = env::args_os().nth(1).expect(usage);
     let key =
         fs::File::open(&key).with_context(|_| format_err!("opening input key file: {:?}", key))?;
-    let key = septid::load_key(key)?;
+    let key = septid::MasterKey::from_reader(key)?;
 
     let dest = env::args().nth(2).expect(usage);
     let dest = TcpStream::connect(&dest)

@@ -11,15 +11,20 @@ use failure::Error;
 use num_bigint::BigUint;
 use subtle::ConstantTimeEq;
 
-use super::BothNonces;
-use super::EncKey;
-use super::MacKey;
-use super::MasterKey;
-use super::Nonce;
-use super::XParam;
-use super::YParam;
-use super::Y_H_LEN;
+use crate::named_array;
 use crate::SessionCrypto;
+
+named_array!(MasterKey, 256);
+
+named_array!(Nonce, 256);
+named_array!(BothNonces, 2 * Nonce::BITS);
+named_array!(XParam, 256);
+named_array!(YParam, 2048);
+
+named_array!(EncKey, 256);
+named_array!(MacKey, 256);
+
+pub const Y_H_LEN: usize = YParam::BYTES + super::packet::PACKET_MAC_LEN;
 
 pub(crate) fn generate_y_reply(
     key: &MasterKey,
@@ -131,16 +136,6 @@ fn to_bytes_be(num: &BigUint, len: usize) -> Vec<u8> {
     val
 }
 
-pub fn load_key<R: io::Read>(mut from: R) -> Result<MasterKey, Error> {
-    use digest::Digest as _;
-    use digest::FixedOutput as _;
-
-    let mut ctx = sha2::Sha256::new();
-    io::copy(&mut from, &mut ctx)?;
-
-    Ok(MasterKey::from_slice(&ctx.fixed_result()))
-}
-
 fn two_keys(buf: &[u8]) -> SessionCrypto {
     SessionCrypto {
         enc: EncKey::from_slice(&buf[..EncKey::BYTES]),
@@ -149,8 +144,31 @@ fn two_keys(buf: &[u8]) -> SessionCrypto {
     }
 }
 
+impl MasterKey {
+    /// Load and process a key from an arbitrary length file.
+    ///
+    /// It is the user's responsibility to ensure there is sufficient entropy here.
+    ///
+    /// e.g. `dd if=/dev/urandom of=my.key bs=1 count=64`
+    pub fn from_reader<R: io::Read>(mut from: R) -> Result<MasterKey, Error> {
+        use digest::Digest as _;
+        use digest::FixedOutput as _;
+
+        let mut ctx = sha2::Sha256::new();
+        io::copy(&mut from, &mut ctx)?;
+
+        Ok(MasterKey::from_slice(&ctx.fixed_result()))
+    }
+}
+
+impl MacKey {
+    pub fn begin(&self) -> hmac::Hmac<sha2::Sha256> {
+        hmac::Hmac::<sha2::Sha256>::new_varkey(&self.0).expect("all keys are valid for hmac")
+    }
+}
+
 /// rfc3526 2048
-const GROUP_14_PRIME: super::YParam = super::YParam([
+const GROUP_14_PRIME: YParam = YParam([
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xC9, 0x0F, 0xDA, 0xA2, 0x21, 0x68, 0xC2, 0x34,
     0xC4, 0xC6, 0x62, 0x8B, 0x80, 0xDC, 0x1C, 0xD1, 0x29, 0x02, 0x4E, 0x08, 0x8A, 0x67, 0xCC, 0x74,
     0x02, 0x0B, 0xBE, 0xA6, 0x3B, 0x13, 0x9B, 0x22, 0x51, 0x4A, 0x08, 0x79, 0x8E, 0x34, 0x04, 0xDD,

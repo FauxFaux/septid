@@ -8,12 +8,20 @@ use crate::kex;
 use crate::MasterKey;
 use crate::SessionCrypto;
 
+/// A secure pipe over a `Write`.
+///
+/// The `write` implementation forms a packet from its input immediately, then blocks trying
+/// to write it to the network. It will consume up to 1kB at a time. This will hence be much
+/// more efficient if you buffer the input before writing it.
 pub struct SPipe<S> {
     inner: S,
     crypto: SessionCrypto,
 }
 
 impl<S: Write + Read> SPipe<S> {
+    /// Negotiate a session (which requires reading and writing), then switch to write-only mode.
+    ///
+    /// This method will block until the session is established.
     pub fn negotiate(key: MasterKey, mut inner: S) -> Result<SPipe<S>, Error> {
         let (to_write, mut kex) = kex::Kex::new(key, false);
         inner.write_all(&to_write)?;

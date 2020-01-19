@@ -1,12 +1,12 @@
 use failure::Error;
 
-use super::BothNonces;
-use super::MacKey;
-use super::MasterKey;
-use super::Nonce;
+use super::crypto::BothNonces;
+use super::crypto::MacKey;
+use super::crypto::MasterKey;
+use super::crypto::Nonce;
+use super::crypto::XParam;
+use super::crypto::Y_H_LEN;
 use super::SessionCrypto;
-use super::XParam;
-use super::Y_H_LEN;
 
 pub struct Kex {
     key: MasterKey,
@@ -27,9 +27,9 @@ pub struct NonceReceived {
     pub buf: [u8; Y_H_LEN],
 }
 
-pub struct Done {
-    pub decrypt: SessionCrypto,
-    pub encrypt: SessionCrypto,
+pub(crate) struct Done {
+    pub(crate) decrypt: SessionCrypto,
+    pub(crate) encrypt: SessionCrypto,
 }
 
 impl Kex {
@@ -69,7 +69,7 @@ impl Kex {
 }
 
 impl NonceReceived {
-    pub fn step(self) -> Result<Done, Error> {
+    pub(crate) fn step(self) -> Result<Done, Error> {
         let (client, server) = super::crypto::y_h_to_keys(
             &self.kex.key,
             &self.their_dh_mac_key,
