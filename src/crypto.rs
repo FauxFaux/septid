@@ -149,8 +149,8 @@ impl MasterKey {
     ///
     /// e.g. `dd if=/dev/urandom of=my.key bs=1 count=64`
     pub fn from_reader<R: io::Read>(mut from: R) -> Result<MasterKey, Error> {
-        use digest::Digest as _;
-        use digest::FixedOutput as _;
+        use sha2::digest::Digest as _;
+        use sha2::digest::FixedOutput as _;
 
         let mut ctx = sha2::Sha256::new();
         io::copy(&mut from, &mut ctx)?;
