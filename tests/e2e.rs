@@ -1,3 +1,4 @@
+#![cfg(features = "server")]
 use std::io;
 
 use failure::Error;
@@ -33,7 +34,7 @@ async fn against_us() -> Result<(), Error> {
 
     let key = septid::load_key(io::Cursor::new([0u8; 32]))?;
 
-    let mut enc = septid::start_server(&septid::StartServer {
+    let mut enc = septid::server::start_server(&septid::server::StartServer {
         key: key.clone(),
         bind_address: vec!["127.0.68.1:6222".to_string()],
         target_address: vec!["127.0.68.1:6555".to_string()],
@@ -41,7 +42,7 @@ async fn against_us() -> Result<(), Error> {
     })
     .await?;
 
-    let mut dec = septid::start_server(&septid::StartServer {
+    let mut dec = septid::server::start_server(&septid::server::StartServer {
         key: key.clone(),
         bind_address: vec!["127.0.68.1:6555".to_string()],
         target_address: vec!["127.0.68.1:6888".to_string()],
@@ -62,8 +63,8 @@ async fn against_us() -> Result<(), Error> {
 
     assert_eq!(b"hello", &buf[..]);
 
-    enc.send(septid::Command::Terminate).await?;
-    dec.send(septid::Command::Terminate).await?;
+    enc.send(septid::server::Command::Terminate).await?;
+    dec.send(septid::server::Command::Terminate).await?;
 
     Ok(())
 }

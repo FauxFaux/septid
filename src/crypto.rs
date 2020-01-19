@@ -21,7 +21,7 @@ use super::YParam;
 use super::Y_H_LEN;
 use crate::SessionCrypto;
 
-pub fn generate_y_reply(
+pub(crate) fn generate_y_reply(
     key: &MasterKey,
     our_nonce: &Nonce,
     other_nonce: &Nonce,
@@ -67,7 +67,7 @@ pub fn generate_y_reply(
     Ok((response, nonces, dh_mac_theirs))
 }
 
-pub fn y_h_to_keys(
+pub(crate) fn y_h_to_keys(
     key: &MasterKey,
     their_dh_mac_key: &MacKey,
     our_x: &XParam,
@@ -105,7 +105,7 @@ pub fn y_h_to_keys(
     Ok((client, server))
 }
 
-pub fn aes_ctr(crypto: &mut SessionCrypto, data: &mut [u8]) -> u64 {
+pub(crate) fn aes_ctr(crypto: &mut SessionCrypto, data: &mut [u8]) -> u64 {
     let number_to_use = crypto.packet_number;
     crypto.packet_number += 1;
 
