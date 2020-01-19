@@ -27,6 +27,7 @@ pub struct NonceReceived {
     pub buf: [u8; Y_H_LEN],
 }
 
+#[allow(dead_code)]
 pub(crate) struct Done {
     pub(crate) decrypt: SessionCrypto,
     pub(crate) encrypt: SessionCrypto,
