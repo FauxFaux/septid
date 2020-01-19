@@ -17,6 +17,7 @@ fn flip_if<T>(flip: bool, left: T, right: T) -> (T, T) {
     }
 }
 
+#[derive(Debug, PartialEq)]
 struct SessionCrypto {
     enc: crypto::EncKey,
     mac: crypto::MacKey,
