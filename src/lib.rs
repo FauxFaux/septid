@@ -13,6 +13,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 mod crypto;
+mod kex;
 mod named_array;
 mod packet;
 mod stream;
@@ -116,20 +117,17 @@ async fn handle_client(
 
     let (mut plain, mut encrypted) = flip_if(encrypt, initiated, accepted);
 
-    let our_nonce = Nonce::random();
-    let our_x = XParam::random();
-    encrypted.write_all(&our_nonce.0).await?;
+    let (to_write, state) = kex::NonceSent::new(key.clone(), decrypt);
+    encrypted.write_all(&to_write).await?;
 
     let other_nonce = {
         let mut buf = [0u8; Nonce::BYTES];
         encrypted.read_exact(&mut buf).await?;
-        Nonce::from_slice(&buf)
+        buf
     };
 
-    let (response, nonces, their_dh_mac_key) =
-        crypto::generate_y_reply(&key, &our_nonce, &other_nonce, decrypt, &our_x)?;
-
-    encrypted.write_all(&response).await?;
+    let (to_write, state) = state.step(other_nonce)?;
+    encrypted.write_all(&to_write).await?;
 
     let y_h = {
         let mut buf = [0u8; Y_H_LEN];
@@ -137,16 +135,13 @@ async fn handle_client(
         buf
     };
 
-    let (client, server) =
-        crypto::y_h_to_keys(&key, &their_dh_mac_key, &our_x, &nonces, y_h.as_ref())?;
+    let kex::Done { decrypt, encrypt } = state.step(y_h)?;
 
     log::info!(
         "{:?} -> {:?}: keys agreed",
         plain.local_addr()?,
         encrypted.local_addr()?
     );
-
-    let (decrypt, encrypt) = flip_if(decrypt, server, client);
 
     let (plain_read, plain_write) = tokio::io::split(plain);
     let (encrypted_read, encrypted_write) = tokio::io::split(encrypted);
