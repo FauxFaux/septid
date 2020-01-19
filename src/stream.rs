@@ -1,14 +1,10 @@
-use std::io;
-
 use failure::err_msg;
 use failure::Error;
 use failure::ResultExt;
-use log::debug;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
 
 use crate::packet;
 use crate::SessionCrypto;

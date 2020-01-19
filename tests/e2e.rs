@@ -1,5 +1,4 @@
 use std::io;
-use std::thread;
 
 use failure::Error;
 use std::io::{Read, Write};

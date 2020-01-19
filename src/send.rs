@@ -1,14 +1,14 @@
-use std::io::Write;
 use std::io;
 use std::io::Read;
+use std::io::Write;
 
 use failure::Error;
 
-use crate::MasterKey;
 use crate::kex;
+use crate::MasterKey;
 use crate::SessionCrypto;
 
-struct SPipe<S> {
+pub struct SPipe<S> {
     inner: S,
     crypto: SessionCrypto,
 }
@@ -23,7 +23,9 @@ impl<S: Write + Read> SPipe<S> {
         inner.write_all(&to_write)?;
         inner.read_exact(&mut kex.buf)?;
 
-        let kex::Done { encrypt: crypto, .. } = kex.step()?;
+        let kex::Done {
+            encrypt: crypto, ..
+        } = kex.step()?;
 
         Ok(SPipe { inner, crypto })
     }
@@ -41,7 +43,9 @@ impl<S: Write> Write for SPipe<S> {
             return Ok(0);
         }
         let buf = &buf[..buf.len().min(super::packet::PACKET_MAX_MESSAGE_LEN)];
-        self.inner.write_all(&super::packet::enpacket(&mut self.crypto, buf))?;
+        self.inner
+            .write_all(&super::packet::enpacket(&mut self.crypto, buf))?;
+        println!("write {} bytes", buf.len());
         Ok(buf.len())
     }
 

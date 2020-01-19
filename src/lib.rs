@@ -1,11 +1,8 @@
-use std::collections::HashMap;
 use std::net;
 use std::net::ToSocketAddrs;
 
-use failure::err_msg;
 use failure::Error;
 use futures::future::Either;
-use log::debug;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -22,6 +19,7 @@ mod stream;
 use crate::stream::decrypt_packets;
 use crate::stream::encrypt_packets;
 pub use crypto::load_key;
+pub use send::SPipe;
 
 named_array!(MasterKey, 256);
 
@@ -116,7 +114,7 @@ async fn handle_client(
 
     let initiated = TcpStream::connect(&target_addr).await?;
 
-    let (mut plain, mut encrypted) = flip_if(encrypt, initiated, accepted);
+    let (plain, mut encrypted) = flip_if(encrypt, initiated, accepted);
 
     let (to_write, mut state) = kex::Kex::new(key.clone(), decrypt);
     encrypted.write_all(&to_write).await?;
@@ -149,13 +147,6 @@ fn flip_if<T>(flip: bool, left: T, right: T) -> (T, T) {
     } else {
         (left, right)
     }
-}
-
-pub struct Server {
-    key: MasterKey,
-    encrypt: bool,
-    target_addrs: Vec<std::net::SocketAddr>,
-    command_recv: mpsc::Receiver<Command>,
 }
 
 pub struct SessionCrypto {

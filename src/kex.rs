@@ -1,13 +1,11 @@
 use failure::Error;
 
 use super::BothNonces;
-use super::EncKey;
 use super::MacKey;
 use super::MasterKey;
 use super::Nonce;
 use super::SessionCrypto;
 use super::XParam;
-use super::YParam;
 use super::Y_H_LEN;
 
 pub struct Kex {
