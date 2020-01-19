@@ -3,8 +3,6 @@ use std::io;
 use aes_ctr::stream_cipher::NewStreamCipher;
 use aes_ctr::stream_cipher::SyncStreamCipher;
 use aes_ctr::Aes256Ctr;
-use byteorder::ByteOrder;
-use byteorder::BE;
 use crypto_mac::Mac;
 use failure::ensure;
 use failure::Error;
@@ -115,7 +113,7 @@ pub(crate) fn aes_ctr(crypto: &mut SessionCrypto, data: &mut [u8]) -> u64 {
     crypto.packet_number += 1;
 
     let mut nonce = [0u8; 16];
-    BE::write_u64(&mut nonce[..8], number_to_use);
+    nonce[..8].copy_from_slice(&number_to_use.to_be_bytes());
 
     let mut cipher = Aes256Ctr::new_var(&crypto.enc.0[..], &nonce).expect("length from arrays");
     cipher.apply_keystream(data);

@@ -6,7 +6,6 @@ edition = "2018"
 
 [dependencies]
 aes-ctr = "0.3"
-byteorder = "1"
 cast = "0.2"
 crypto-mac = "0.7"
 digest = "0.8"
