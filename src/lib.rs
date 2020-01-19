@@ -5,16 +5,19 @@ use std::net::ToSocketAddrs;
 use failure::err_msg;
 use failure::Error;
 use log::debug;
-use mio::net::TcpListener;
-use mio::net::TcpStream;
-use mio::Token;
-use mio_extras::channel as mio_channel;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 
 mod crypto;
 mod named_array;
 mod packet;
 mod stream;
 
+use crate::stream::decrypt_packets;
+use crate::stream::encrypt_packets;
 pub use crypto::load_key;
 
 named_array!(MasterKey, 256);
@@ -41,138 +44,85 @@ pub enum Command {
     Terminate,
 }
 
-const COMMANDS: Token = Token(1);
+pub async fn start_server(config: &StartServer) -> Result<mpsc::Sender<Command>, Error> {
+    let (command_send, command_recv) = mpsc::channel::<Command>(1);
 
-pub fn start_server(
-    config: &StartServer,
-) -> Result<(Server, mio_channel::SyncSender<Command>), Error> {
-    let mut start_token = 2;
-
-    let mut sources = HashMap::with_capacity(8);
-
-    for source in &config.bind_address {
-        for source in source.to_socket_addrs()? {
-            sources.insert(Token(start_token), TcpListener::bind(&source)?);
-            start_token += 1;
-        }
-    }
-
-    if start_token % 2 == 1 {
-        start_token += 1;
-    }
+    let mut sources = Vec::with_capacity(config.bind_address.len() * 2);
 
     let mut target_addrs = Vec::with_capacity(config.target_address.len() * 2);
     for target in &config.target_address {
         target_addrs.extend(target.to_socket_addrs()?);
     }
 
-    let mut target_addrs = target_addrs.into_iter().cycle();
-
-    target_addrs
-        .next()
-        .ok_or_else(|| err_msg("no resolution"))?;
-
-    let (command_send, command_recv) = mio_extras::channel::sync_channel::<Command>(1);
-
-    let server = Server {
-        key: config.key.clone(),
-        encrypt: config.encrypt,
-        clients: HashMap::with_capacity(100),
-        sources,
-        next_token: start_token,
-        target_addrs,
-        command_recv,
-        poll: mio::Poll::new()?,
-        events: mio::Events::with_capacity(32),
-    };
-
-    server.poll.register(
-        &server.command_recv,
-        COMMANDS,
-        mio::Ready::readable(),
-        mio::PollOpt::edge(),
-    )?;
-
-    for (token, socket) in &server.sources {
-        server
-            .poll
-            .register(socket, *token, mio::Ready::readable(), mio::PollOpt::edge())?;
-    }
-
-    Ok((server, command_send))
-}
-
-pub fn tick(server: &mut Server) -> Result<bool, Error> {
-    server.poll.poll(&mut server.events, None)?;
-    for event in server.events.iter().collect::<Vec<_>>() {
-        let token = event.token();
-
-        if let Some(conn) = server.clients.get_mut(&round_down(token)) {
-            handle_client(&server.key, !server.encrypt, conn, &server.poll)?;
-        } else if COMMANDS == token {
-            while let Ok(command) = server.command_recv.try_recv() {
-                match command {
-                    Command::NoNewConnections => server.sources.clear(),
-                    Command::Terminate => return Ok(false),
-                }
-            }
-        } else if let Some(source) = server.sources.get_mut(&token) {
-            if !event.readiness().is_readable() {
-                continue;
-            }
-
-            let (accepted, from) = source.accept()?;
-
-            let (token, conn) = handle_accept(
-                accepted,
-                &server.target_addrs.next().expect("non-empty cycle"),
-                server.token_pair(),
-                &server.poll,
-                server.encrypt,
-            )?;
-
-            debug!("connection enc:{} addr:{}", token.0, from);
-
-            server.clients.insert(token, conn);
-        } else {
-            debug!("unexpected-event token:{}", token.0);
+    for source in &config.bind_address {
+        for source in source.to_socket_addrs()? {
+            let listener = TcpListener::bind(&source).await?;
+            sources.push(listener);
         }
     }
 
-    Ok(true)
+    for mut listener in sources {
+        let key = config.key.clone();
+        let target_addrs = target_addrs.clone();
+        let encrypt = config.encrypt;
+        tokio::spawn(async move {
+            while let Ok((stream, _addr)) = listener.accept().await {
+                handle_client(stream, &key, &target_addrs[0], encrypt)
+                    .await
+                    .unwrap();
+            }
+        });
+    }
+
+    Ok(command_send)
 }
 
-fn handle_accept(
+async fn handle_client(
     accepted: TcpStream,
+    key: &MasterKey,
     target_addr: &net::SocketAddr,
-    (encrypted_token, plain_token): (Token, Token),
-    poll: &mio::Poll,
     encrypt: bool,
-) -> Result<(Token, Conn), Error> {
-    let initiated = TcpStream::connect(&target_addr)?;
+) -> Result<(), Error> {
+    let decrypt = !encrypt;
 
-    let (plain, encrypted) = flip_if(encrypt, initiated, accepted);
+    let initiated = TcpStream::connect(&target_addr).await?;
 
-    let mut encrypted = stream::Stream::new(encrypted, encrypted_token);
-    encrypted.initial_registration(poll)?;
-
-    let mut plain = stream::Stream::new(plain, plain_token);
-    plain.initial_registration(poll)?;
+    let (mut plain, mut encrypted) = flip_if(encrypt, initiated, accepted);
 
     let our_nonce = Nonce::random()?;
     let our_x = XParam::random()?;
-    encrypted.write_all(&our_nonce.0)?;
+    encrypted.write_all(&our_nonce.0).await?;
 
-    encrypted.reregister(poll)?;
+    let other_nonce = {
+        let mut buf = [0u8; Nonce::BYTES];
+        encrypted.read_exact(&mut buf).await?;
+        Nonce::from_slice(&buf)
+    };
 
-    Ok((
-        encrypted_token,
-        Conn {
-            encrypted,
-            plain,
-            crypto: Crypto::NonceSent { our_nonce, our_x },
-        },
-    ))
+    let (response, nonces, their_dh_mac_key) =
+        crypto::generate_y_reply(&key, &our_nonce, &other_nonce, decrypt, &our_x)?;
+
+    encrypted.write_all(&response).await?;
+
+    let y_h = {
+        let mut buf = [0u8; Y_H_LEN];
+        encrypted.read_exact(&mut buf).await?;
+        buf
+    };
+
+    let (client, server) =
+        crypto::y_h_to_keys(&key, &their_dh_mac_key, &our_x, &nonces, y_h.as_ref())?;
+
+    let (decrypt, encrypt) = flip_if(decrypt, server, client);
+
+    let (plain_read, plain_write) = tokio::io::split(plain);
+    let (encrypted_read, encrypted_write) = tokio::io::split(encrypted);
+
+    tokio::spawn(async move { encrypt_packets(encrypt, plain_read, encrypted_write) });
+
+    tokio::spawn(async move { decrypt_packets(decrypt, encrypted_read, plain_write) });
+
+    Ok(())
 }
 
 fn flip_if<T>(flip: bool, left: T, right: T) -> (T, T) {
@@ -183,112 +133,11 @@ fn flip_if<T>(flip: bool, left: T, right: T) -> (T, T) {
     }
 }
 
-/// 2 -> 2, 3 -> 2, 4 -> 4, 5 -> 4
-fn round_down(value: Token) -> Token {
-    Token(value.0 & !1)
-}
-
-fn handle_client(
-    key: &MasterKey,
-    decrypt: bool,
-    conn: &mut Conn,
-    poll: &mio::Poll,
-) -> Result<(), Error> {
-    match &mut conn.crypto {
-        Crypto::NonceSent { our_nonce, our_x } => {
-            let other_nonce = match conn.encrypted.read_exact(Nonce::BYTES)? {
-                Some(nonce) => Nonce::from_slice(nonce.as_ref()),
-                None => return Ok(()),
-            };
-
-            let (response, nonces, their_dh_mac_key) =
-                crypto::generate_y_reply(key, our_nonce, &other_nonce, decrypt, our_x)?;
-
-            conn.encrypted.write_all(&response)?;
-            conn.encrypted.reregister(&poll)?;
-
-            conn.crypto = Crypto::NonceReceived {
-                nonces,
-                our_x: our_x.clone(),
-                their_dh_mac_key,
-            };
-        }
-        Crypto::NonceReceived {
-            nonces,
-            our_x,
-            their_dh_mac_key,
-        } => {
-            let y_h = match conn.encrypted.read_exact(Y_H_LEN)? {
-                Some(y_h) => y_h,
-                None => return Ok(()),
-            };
-
-            let (client, server) =
-                crypto::y_h_to_keys(key, their_dh_mac_key, our_x, nonces, y_h.as_ref())?;
-
-            // BORROW CHECKER
-            drop(y_h);
-
-            conn.encrypted.reregister(&poll)?;
-            conn.plain.reregister(&poll)?;
-
-            let (decrypt, encrypt) = flip_if(decrypt, server, client);
-
-            conn.crypto = Crypto::Done { decrypt, encrypt };
-        }
-        Crypto::Done { decrypt, encrypt } => {
-            while stream::decrypt_packet(decrypt, &mut conn.encrypted, &mut conn.plain)? {}
-            while stream::encrypt_packet(encrypt, &mut conn.plain, &mut conn.encrypted)? {}
-            conn.encrypted.reregister(&poll)?;
-            conn.plain.reregister(&poll)?;
-        }
-    };
-
-    Ok(())
-}
-
 pub struct Server {
     key: MasterKey,
     encrypt: bool,
-    sources: HashMap<Token, TcpListener>,
-    clients: HashMap<Token, Conn>,
-    next_token: usize,
-    target_addrs: std::iter::Cycle<std::vec::IntoIter<std::net::SocketAddr>>,
-    command_recv: mio_channel::Receiver<Command>,
-    poll: mio::Poll,
-    events: mio::Events,
-}
-
-impl Server {
-    fn token_pair(&mut self) -> (Token, Token) {
-        let left = Token(self.next_token);
-        self.next_token = self.next_token.checked_add(1).unwrap();
-        let right = Token(self.next_token);
-        self.next_token = self.next_token.checked_add(1).unwrap();
-        (left, right)
-    }
-}
-
-struct Conn {
-    plain: stream::Stream,
-    encrypted: stream::Stream,
-    crypto: Crypto,
-}
-
-enum Crypto {
-    NonceSent {
-        our_nonce: Nonce,
-        our_x: XParam,
-    },
-    NonceReceived {
-        nonces: BothNonces,
-        our_x: XParam,
-        their_dh_mac_key: MacKey,
-    },
-    Done {
-        decrypt: SessionCrypto,
-        encrypt: SessionCrypto,
-    },
+    target_addrs: Vec<std::net::SocketAddr>,
+    command_recv: mpsc::Receiver<Command>,
 }
 
 pub struct SessionCrypto {

@@ -12,8 +12,6 @@ crypto-mac = "0.7"
 digest = "0.8"
 getrandom = "0.1"
 log = "0.4"
-mio = "0.6"
-mio-extras = "2"
 sha2 = "0.8"
 hmac = "0.7"
 num-bigint = "0.2"
@@ -34,6 +32,10 @@ version = "0.1"
 # features -= simple (big dependencies)
 default-features = false
 version = "0.3"
+
+[dependencies.tokio]
+features = ["full"]
+version = "0.2"
 
 # cli deps
 

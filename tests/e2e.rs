@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 #[test]
+#[cfg(mio)]
 fn stop() -> Result<(), Error> {
     let key = septid::load_key(io::Cursor::new([0u8; 32]))?;
     let (mut server, sender) = septid::start_server(&septid::StartServer {
@@ -28,6 +29,7 @@ fn stop() -> Result<(), Error> {
 }
 
 #[test]
+#[cfg(mio)]
 fn against_us() -> Result<(), Error> {
     let key = septid::load_key(io::Cursor::new([0u8; 32]))?;
 
