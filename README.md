@@ -15,8 +15,11 @@ or the [CLI example](examples/write-only.rs).
 
 ## MSRV
 
-Rust 1.34 (`TryFrom`) is supported, and checked by Travis.
-Updating this is a semver bump.
+Rust 1.39 (`async/await`) is supported, and checked by Travis.
+
+This is required by `zeroize`, but not (yet) by us directly.
+
+Updating this is a minor semver bump.
 
 ## License
 
