@@ -116,8 +116,8 @@ async fn handle_client(
 
     let (mut plain, mut encrypted) = flip_if(encrypt, initiated, accepted);
 
-    let our_nonce = Nonce::random()?;
-    let our_x = XParam::random()?;
+    let our_nonce = Nonce::random();
+    let our_x = XParam::random();
     encrypted.write_all(&our_nonce.0).await?;
 
     let other_nonce = {

@@ -4,7 +4,6 @@ use std::fs;
 use failure::err_msg;
 use failure::format_err;
 use failure::ResultExt;
-use getrandom::getrandom;
 
 fn main() -> Result<(), failure::Error> {
     pretty_env_logger::init();
@@ -67,8 +66,6 @@ fn main() -> Result<(), failure::Error> {
             .with_context(|_| format_err!("opening key {:?}", key_path))?;
         septid::load_key(file)?
     };
-
-    getrandom(&mut [0u8; 1]).with_context(|_| err_msg("warming up random numbers"))?;
 
     let (mut server, command) = septid::start_server(&septid::StartServer {
         bind_address: vec![addr],

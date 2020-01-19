@@ -9,10 +9,11 @@ macro_rules! named_array {
             pub const BYTES: usize = $len / 8;
             pub const BITS: usize = $len;
 
-            pub fn random() -> Result<Self, getrandom::Error> {
+            pub fn random() -> Self {
+                use rand::Rng as _;
                 let mut ret = [0u8; Self::BYTES];
-                getrandom::getrandom(&mut ret)?;
-                Ok(Self(ret))
+                rand::thread_rng().fill(&mut ret);
+                Self(ret)
             }
 
             pub fn from_slice(data: &[u8]) -> Self {
