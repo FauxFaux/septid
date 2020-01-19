@@ -30,7 +30,7 @@ pub(crate) fn generate_y_reply(
     other_nonce: &Nonce,
     decrypt: bool,
     our_x: &XParam,
-) -> Result<([u8; Y_H_LEN], BothNonces, MacKey), Error> {
+) -> ([u8; Y_H_LEN], BothNonces, MacKey) {
     let (client_nonce, server_nonce) = super::flip_if(decrypt, our_nonce, other_nonce);
 
     let mut nonces = [0u8; BothNonces::BYTES];
@@ -67,7 +67,7 @@ pub(crate) fn generate_y_reply(
     response[..YParam::BYTES].copy_from_slice(&our_y);
     response[YParam::BYTES..].copy_from_slice(&y_mac);
 
-    Ok((response, nonces, dh_mac_theirs))
+    (response, nonces, dh_mac_theirs)
 }
 
 pub(crate) fn y_h_to_keys(
@@ -148,7 +148,7 @@ impl MasterKey {
     /// It is the user's responsibility to ensure there is sufficient entropy here.
     ///
     /// e.g. `dd if=/dev/urandom of=my.key bs=1 count=64`
-    pub fn from_reader<R: io::Read>(mut from: R) -> Result<MasterKey, Error> {
+    pub fn from_reader<R: io::Read>(mut from: R) -> io::Result<MasterKey> {
         use sha2::digest::Digest as _;
         use sha2::digest::FixedOutput as _;
 

@@ -49,15 +49,15 @@ impl Kex {
         )
     }
 
-    pub fn step(self) -> Result<([u8; Y_H_LEN], NonceReceived), Error> {
+    pub fn step(self) -> ([u8; Y_H_LEN], NonceReceived) {
         let (response, nonces, their_dh_mac_key) = super::crypto::generate_y_reply(
             &self.key,
             &self.our_nonce,
             &Nonce(self.buf),
             self.decrypt,
             &self.our_x,
-        )?;
-        Ok((
+        );
+        (
             response,
             NonceReceived {
                 kex: self,
@@ -65,7 +65,7 @@ impl Kex {
                 their_dh_mac_key,
                 buf: [0u8; Y_H_LEN],
             },
-        ))
+        )
     }
 }
 

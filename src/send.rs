@@ -2,7 +2,9 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 
+use failure::err_msg;
 use failure::Error;
+use failure::ResultExt;
 
 use crate::kex;
 use crate::MasterKey;
@@ -23,20 +25,38 @@ impl<S: Write + Read> SPipe<S> {
     ///
     /// This method will block until the session is established.
     pub fn negotiate(key: MasterKey, mut inner: S) -> Result<SPipe<S>, Error> {
-        let (to_write, mut kex) = kex::Kex::new(key, false);
-        inner.write_all(&to_write)?;
-        inner.read_exact(&mut kex.buf)?;
-
-        let (to_write, mut kex) = kex.step()?;
-        inner.write_all(&to_write)?;
-        inner.read_exact(&mut kex.buf)?;
-
-        let kex::Done {
-            encrypt: crypto, ..
-        } = kex.step()?;
-
+        let crypto =
+            drive_exchange(key, &mut inner).with_context(|_| err_msg("negotiating with server"))?;
         Ok(SPipe { inner, crypto })
     }
+}
+
+fn drive_exchange<S: Read + Write>(key: MasterKey, mut inner: S) -> Result<SessionCrypto, Error> {
+    let (to_write, mut kex) = kex::Kex::new(key, false);
+    inner
+        .write_all(&to_write)
+        .with_context(|_| err_msg("sending opening message to server"))?;
+    inner
+        .read_exact(&mut kex.buf)
+        .with_context(|_| err_msg("reading server's opening message"))?;
+
+    let (to_write, mut kex) = kex.step();
+    inner
+        .write_all(&to_write)
+        .with_context(|_| err_msg("responding to server's challenge"))?;
+    inner.read_exact(&mut kex.buf).with_context(|_| {
+        err_msg(concat!(
+            "reading server's challenge response,",
+            " failure can mean our key is wrong,",
+            " or there are no backends available"
+        ))
+    })?;
+
+    let kex::Done { encrypt, .. } = kex
+        .step()
+        .with_context(|_| err_msg("validating handshake from server"))?;
+
+    Ok(encrypt)
 }
 
 impl<S> SPipe<S> {
@@ -53,7 +73,6 @@ impl<S: Write> Write for SPipe<S> {
         let buf = &buf[..buf.len().min(super::packet::PACKET_MAX_MESSAGE_LEN)];
         self.inner
             .write_all(&super::packet::enpacket(&mut self.crypto, buf))?;
-        println!("write {} bytes", buf.len());
         Ok(buf.len())
     }
 
