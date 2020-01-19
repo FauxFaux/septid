@@ -19,6 +19,7 @@ hmac = "0.7"
 num-bigint = "0.2"
 num-traits = "0.2"
 subtle = "2"
+zeroize = "1"
 
 
 # fiddled dependencies
@@ -33,13 +34,6 @@ version = "0.1"
 # features -= simple (big dependencies)
 default-features = false
 version = "0.3"
-
-[dependencies.zeroize]
-default-features = false
-# features -= zeroize_derive (buggy in 0.6)
-features = ["std"]
-version = "0.6"
-
 
 # cli deps
 
