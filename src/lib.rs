@@ -117,25 +117,15 @@ async fn handle_client(
 
     let (mut plain, mut encrypted) = flip_if(encrypt, initiated, accepted);
 
-    let (to_write, state) = kex::NonceSent::new(key.clone(), decrypt);
+    let (to_write, mut state) = kex::Kex::new(key.clone(), decrypt);
     encrypted.write_all(&to_write).await?;
+    encrypted.read_exact(&mut state.buf).await?;
 
-    let other_nonce = {
-        let mut buf = [0u8; Nonce::BYTES];
-        encrypted.read_exact(&mut buf).await?;
-        buf
-    };
-
-    let (to_write, state) = state.step(other_nonce)?;
+    let (to_write, mut state) = state.step()?;
     encrypted.write_all(&to_write).await?;
+    encrypted.read_exact(&mut state.buf).await?;
 
-    let y_h = {
-        let mut buf = [0u8; Y_H_LEN];
-        encrypted.read_exact(&mut buf).await?;
-        buf
-    };
-
-    let kex::Done { decrypt, encrypt } = state.step(y_h)?;
+    let kex::Done { decrypt, encrypt } = state.step()?;
 
     log::info!(
         "{:?} -> {:?}: keys agreed",

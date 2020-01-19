@@ -10,22 +10,23 @@ use super::XParam;
 use super::YParam;
 use super::Y_H_LEN;
 
-pub struct NonceSent {
+pub struct Kex {
     key: MasterKey,
     decrypt: bool,
     our_x: XParam,
 
     our_nonce: Nonce,
+
+    pub buf: [u8; Nonce::BYTES],
 }
 
 pub struct NonceReceived {
-    key: MasterKey,
-    decrypt: bool,
-    our_x: XParam,
+    kex: Kex,
 
     nonces: BothNonces,
-
     their_dh_mac_key: MacKey,
+
+    pub buf: [u8; Y_H_LEN],
 }
 
 pub struct Done {
@@ -33,56 +34,53 @@ pub struct Done {
     pub encrypt: SessionCrypto,
 }
 
-impl NonceSent {
-    pub fn new(key: MasterKey, decrypt: bool) -> ([u8; Nonce::BYTES], NonceSent) {
+impl Kex {
+    pub fn new(key: MasterKey, decrypt: bool) -> ([u8; Nonce::BYTES], Kex) {
         let our_nonce = Nonce::random();
         let our_x = XParam::random();
         (
             our_nonce.0,
-            NonceSent {
+            Kex {
                 key,
                 decrypt,
                 our_nonce,
                 our_x,
+                buf: [0u8; Nonce::BYTES],
             },
         )
     }
 
-    pub fn step(
-        self,
-        other_nonce: [u8; Nonce::BYTES],
-    ) -> Result<([u8; Y_H_LEN], NonceReceived), Error> {
+    pub fn step(self) -> Result<([u8; Y_H_LEN], NonceReceived), Error> {
         let (response, nonces, their_dh_mac_key) = super::crypto::generate_y_reply(
             &self.key,
             &self.our_nonce,
-            &Nonce(other_nonce),
+            &Nonce(self.buf),
             self.decrypt,
             &self.our_x,
         )?;
         Ok((
             response,
             NonceReceived {
-                key: self.key,
-                our_x: self.our_x,
-                decrypt: self.decrypt,
+                kex: self,
                 nonces,
                 their_dh_mac_key,
+                buf: [0u8; Y_H_LEN],
             },
         ))
     }
 }
 
 impl NonceReceived {
-    pub fn step(self, y_h: [u8; Y_H_LEN]) -> Result<Done, Error> {
+    pub fn step(self) -> Result<Done, Error> {
         let (client, server) = super::crypto::y_h_to_keys(
-            &self.key,
+            &self.kex.key,
             &self.their_dh_mac_key,
-            &self.our_x,
+            &self.kex.our_x,
             &self.nonces,
-            y_h.as_ref(),
+            &self.buf[..],
         )?;
 
-        let (decrypt, encrypt) = super::flip_if(self.decrypt, server, client);
+        let (decrypt, encrypt) = super::flip_if(self.kex.decrypt, server, client);
 
         Ok(Done { decrypt, encrypt })
     }
