@@ -99,8 +99,8 @@ pub fn y_h_to_keys(
     let mut quad_dk = [0u8; EncKey::BYTES * 2 + MacKey::BYTES * 2];
     pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &buf, 1, &mut quad_dk);
 
-    let client = two_keys(&quad_dk[64..]);
-    let server = two_keys(&quad_dk[..64]);
+    let client = two_keys(&quad_dk[..64]);
+    let server = two_keys(&quad_dk[64..]);
 
     Ok((client, server))
 }
