@@ -4,6 +4,7 @@ use std::net::ToSocketAddrs;
 
 use failure::err_msg;
 use failure::Error;
+use futures::future::Either;
 use log::debug;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -39,13 +40,14 @@ pub struct StartServer {
     pub encrypt: bool,
 }
 
+#[derive(Copy, Clone, Debug)]
 pub enum Command {
     NoNewConnections,
     Terminate,
 }
 
 pub async fn start_server(config: &StartServer) -> Result<mpsc::Sender<Command>, Error> {
-    let (command_send, command_recv) = mpsc::channel::<Command>(1);
+    let (command_send, mut command_recv) = mpsc::channel::<Command>(1);
 
     let mut sources = Vec::with_capacity(config.bind_address.len() * 2);
 
@@ -57,22 +59,47 @@ pub async fn start_server(config: &StartServer) -> Result<mpsc::Sender<Command>,
     for source in &config.bind_address {
         for source in source.to_socket_addrs()? {
             let listener = TcpListener::bind(&source).await?;
+            log::info!("{:?}: listening", source);
             sources.push(listener);
         }
     }
+
+    let mut shutdowns: Vec<tokio::sync::oneshot::Sender<()>> = Vec::new();
 
     for mut listener in sources {
         let key = config.key.clone();
         let target_addrs = target_addrs.clone();
         let encrypt = config.encrypt;
+        let (send, recv) = tokio::sync::oneshot::channel();
+        shutdowns.push(send);
+        let local_addr = listener.local_addr()?;
         tokio::spawn(async move {
-            while let Ok((stream, _addr)) = listener.accept().await {
+            let mut recv = recv;
+            loop {
+                let accepter = listener.accept();
+                pin_utils::pin_mut!(accepter);
+                let stream = match futures::future::select(accepter, recv).await {
+                    Either::Left((Ok((stream, client_addr)), remaining)) => {
+                        recv = remaining;
+                        log::info!("{:?} {:?}: accepted client", local_addr, client_addr);
+                        stream
+                    }
+                    _ => break,
+                };
+
                 handle_client(stream, &key, &target_addrs[0], encrypt)
                     .await
                     .unwrap();
             }
         });
     }
+
+    tokio::spawn(async move {
+        command_recv.recv().await;
+        for shutdown in shutdowns {
+            let _ = shutdown.send(());
+        }
+    });
 
     Ok(command_send)
 }
@@ -113,14 +140,19 @@ async fn handle_client(
     let (client, server) =
         crypto::y_h_to_keys(&key, &their_dh_mac_key, &our_x, &nonces, y_h.as_ref())?;
 
+    log::info!(
+        "{:?} -> {:?}: keys agreed",
+        plain.local_addr()?,
+        encrypted.local_addr()?
+    );
+
     let (decrypt, encrypt) = flip_if(decrypt, server, client);
 
     let (plain_read, plain_write) = tokio::io::split(plain);
     let (encrypted_read, encrypted_write) = tokio::io::split(encrypted);
 
-    tokio::spawn(async move { encrypt_packets(encrypt, plain_read, encrypted_write) });
-
-    tokio::spawn(async move { decrypt_packets(decrypt, encrypted_read, plain_write) });
+    tokio::spawn(encrypt_packets(encrypt, plain_read, encrypted_write));
+    tokio::spawn(decrypt_packets(decrypt, encrypted_read, plain_write));
 
     Ok(())
 }

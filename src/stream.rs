@@ -1,6 +1,8 @@
 use std::io;
 
+use failure::err_msg;
 use failure::Error;
+use failure::ResultExt;
 use log::debug;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
@@ -27,6 +29,7 @@ where
         if buf.is_empty() {
             return Ok(());
         }
+        log::debug!("sending {}", buf.len());
         to.write_all(&packet::enpacket(&mut crypto, buf)).await?;
     }
 }
@@ -42,7 +45,9 @@ where
 {
     let mut buf = [0u8; packet::PACKET_LEN];
     loop {
-        from.read_exact(&mut buf).await?;
+        from.read_exact(&mut buf)
+            .await
+            .with_context(|_| err_msg("taking a packet from the wire"))?;
         let output = packet::unpacket(&mut crypto, buf.as_mut()).map_err(failure::err_msg)?;
         to.write_all(output).await?;
     }

@@ -10,12 +10,14 @@ byteorder = "1"
 cast = "0.2"
 crypto-mac = "0.7"
 digest = "0.8"
+futures = "0.3"
 getrandom = "0.1"
 log = "0.4"
 sha2 = "0.8"
 hmac = "0.7"
 num-bigint = "0.2"
 num-traits = "0.2"
+pin-utils = "0.1.0-alpha.4"
 subtle = "2"
 zeroize = "1"
 
@@ -51,6 +53,9 @@ version = "0.2"
 optional = true
 version = "0.3"
 
+
+[dev-dependencies]
+pretty_env_logger = "0.3"
 
 [features]
 default = ["signals"]
