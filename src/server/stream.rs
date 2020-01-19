@@ -9,7 +9,7 @@ use tokio::io::AsyncWriteExt;
 use crate::packet;
 use crate::SessionCrypto;
 
-pub async fn encrypt_packets<F, T>(
+pub(crate) async fn encrypt_packets<F, T>(
     mut crypto: SessionCrypto,
     mut from: F,
     mut to: T,
@@ -30,7 +30,7 @@ where
     }
 }
 
-pub async fn decrypt_packets<F, T>(
+pub(crate) async fn decrypt_packets<F, T>(
     mut crypto: SessionCrypto,
     mut from: F,
     mut to: T,
