@@ -1,0 +1,14 @@
+sudo: false
+dist: bionic
+
+language: rust
+cache: cargo
+rust:
+  - nightly
+  - beta
+  - stable
+  - 1.34.2
+
+matrix:
+  allow_failures:
+    - rust: nightly

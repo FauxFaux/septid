@@ -2,6 +2,14 @@
 name = "septid"
 version = "0.1.0"
 authors = ["Chris West (Faux) <git@goeswhere.com>"]
+
+description = "Pure Rust implementation of the spiped protocol"
+repository = "https://github.com/FauxFaux/septid"
+readme = "README.md"
+
+categories = ["cryptography", "network-programming"]
+license = "MIT OR Apache-2.0"
+
 edition = "2018"
 
 [dependencies]
@@ -68,3 +76,6 @@ required-features = ["cli"]
 
 [profile.release]
 lto = true
+
+[badges.travis-ci]
+repository = "FauxFaux/septid"
