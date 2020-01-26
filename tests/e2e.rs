@@ -8,24 +8,24 @@ use failure::Error;
 use futures::sink::SinkExt as _;
 
 #[test]
-#[cfg(mio)]
 fn stop() -> Result<(), Error> {
-    let key = septid::load_key(io::Cursor::new([0u8; 32]))?;
-    let (mut server, sender) = septid::start_server(&septid::StartServer {
+    task::block_on(async { test_stop().await })
+}
+
+async fn test_stop() -> Result<(), Error> {
+    let key = septid::MasterKey::from_slice(&[0u8; 32]);
+
+    let mut sender = septid::server::start_server(&septid::server::StartServer {
         key,
         bind_address: vec!["127.0.68.1:6254".to_string()],
         target_address: vec!["127.0.68.1:6255".to_string()],
         encrypt: true,
-    })?;
+    })
+    .await?;
 
-    // mostly checking this is `move + Send`, it will probably execute before the loop starts
-    let handle = thread::spawn(move || {
-        sender.send(septid::Command::Terminate).unwrap();
-    });
+    let handle = task::spawn(async move { sender.send(septid::server::Command::Terminate).await });
 
-    septid::tick(&mut server)?;
-
-    handle.join().unwrap();
+    handle.await?;
 
     Ok(())
 }
