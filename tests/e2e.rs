@@ -1,11 +1,10 @@
-use std::io::Read;
-use std::io::Write;
-use std::net::TcpListener;
-use std::net::TcpStream;
-
+use async_std::net::TcpListener;
+use async_std::net::TcpStream;
 use async_std::task;
 use failure::Error;
 use futures::sink::SinkExt as _;
+use futures::AsyncReadExt as _;
+use futures::AsyncWriteExt as _;
 
 #[test]
 fn stop() -> Result<(), Error> {
@@ -56,18 +55,15 @@ async fn test_against_us() -> Result<(), Error> {
     })
     .await?;
 
-    let buf = task::spawn(async move {
-        let target = TcpListener::bind("127.0.68.1:6888")?;
-        let mut feed = TcpStream::connect("127.0.68.1:6222")?;
-        feed.write_all(b"hello")?;
-        let (mut socket, _us) = target.accept()?;
+    {
+        let target = TcpListener::bind("127.0.68.1:6888").await?;
+        let mut feed = TcpStream::connect("127.0.68.1:6222").await?;
+        feed.write_all(b"hello").await?;
+        let (mut socket, _us) = target.accept().await?;
         let mut buf = [0u8; 5];
-        socket.read_exact(&mut buf)?;
-        Ok::<[u8; 5], Error>(buf)
-    })
-    .await?;
-
-    assert_eq!(b"hello", &buf[..]);
+        socket.read_exact(&mut buf).await?;
+        assert_eq!(b"hello", &buf[..]);
+    }
 
     enc.send(septid::server::Command::Terminate).await?;
     dec.send(septid::server::Command::Terminate).await?;
