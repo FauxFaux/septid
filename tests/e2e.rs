@@ -8,7 +8,7 @@ use futures::AsyncWriteExt as _;
 
 #[test]
 fn stop() -> Result<(), Error> {
-    task::block_on(async { test_stop().await })
+    task::block_on(test_stop())
 }
 
 async fn test_stop() -> Result<(), Error> {
@@ -31,7 +31,7 @@ async fn test_stop() -> Result<(), Error> {
 
 #[test]
 fn against_us() -> Result<(), Error> {
-    task::block_on(async { test_against_us().await })
+    task::block_on(test_against_us())
 }
 
 async fn test_against_us() -> Result<(), Error> {
