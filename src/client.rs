@@ -1,4 +1,7 @@
 use std::io;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 
 use failure::err_msg;
 use failure::Error;
@@ -13,8 +16,6 @@ use crate::proto::kex;
 use crate::proto::packet;
 use crate::proto::SessionCrypto;
 use crate::MasterKey;
-use failure::_core::pin::Pin;
-use failure::_core::task::{Context, Poll};
 
 /// A secure pipe over an `AsyncWrite`.
 #[pin_project::pin_project]
