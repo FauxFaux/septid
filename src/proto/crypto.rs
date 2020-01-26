@@ -9,8 +9,8 @@ use failure::Error;
 use num_bigint::BigUint;
 use subtle::ConstantTimeEq;
 
+use super::SessionCrypto;
 use crate::named_array;
-use crate::SessionCrypto;
 
 named_array!(MasterKey, 256);
 

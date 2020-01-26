@@ -1,25 +1,8 @@
-mod crypto;
-mod kex;
-mod named_array;
-mod packet;
-mod send;
+mod proto;
 #[cfg(feature = "server")]
 pub mod server;
+mod sync_client;
 
 pub use crypto::MasterKey;
-pub use send::SPipe;
-
-fn flip_if<T>(flip: bool, left: T, right: T) -> (T, T) {
-    if flip {
-        (right, left)
-    } else {
-        (left, right)
-    }
-}
-
-#[derive(Debug, PartialEq)]
-struct SessionCrypto {
-    enc: crypto::EncKey,
-    mac: crypto::MacKey,
-    packet_number: u64,
-}
+use proto::crypto;
+pub use sync_client::SPipe;

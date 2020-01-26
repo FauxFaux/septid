@@ -6,9 +6,10 @@ use failure::err_msg;
 use failure::Error;
 use failure::ResultExt;
 
-use crate::kex;
+use crate::proto::kex;
+use crate::proto::packet;
+use crate::proto::SessionCrypto;
 use crate::MasterKey;
-use crate::SessionCrypto;
 
 /// A secure pipe over a `Write`.
 ///
@@ -70,9 +71,9 @@ impl<S: Write> Write for SPipe<S> {
         if buf.is_empty() {
             return Ok(0);
         }
-        let buf = &buf[..buf.len().min(super::packet::PACKET_MAX_MESSAGE_LEN)];
+        let buf = &buf[..buf.len().min(packet::PACKET_MAX_MESSAGE_LEN)];
         self.inner
-            .write_all(&super::packet::enpacket(&mut self.crypto, buf))?;
+            .write_all(&packet::enpacket(&mut self.crypto, buf))?;
         Ok(buf.len())
     }
 
