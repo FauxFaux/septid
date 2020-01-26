@@ -1,9 +1,11 @@
-#![cfg(features = "server")]
-use std::io;
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpListener;
+use std::net::TcpStream;
 
+use async_std::task;
 use failure::Error;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use futures::sink::SinkExt as _;
 
 #[test]
 #[cfg(mio)]
@@ -28,11 +30,15 @@ fn stop() -> Result<(), Error> {
     Ok(())
 }
 
-#[tokio::test]
-async fn against_us() -> Result<(), Error> {
+#[test]
+fn against_us() -> Result<(), Error> {
+    task::block_on(async { test_against_us().await })
+}
+
+async fn test_against_us() -> Result<(), Error> {
     pretty_env_logger::init();
 
-    let key = septid::load_key(io::Cursor::new([0u8; 32]))?;
+    let key = septid::MasterKey::from_slice(&[0u8; 32]);
 
     let mut enc = septid::server::start_server(&septid::server::StartServer {
         key: key.clone(),
@@ -50,16 +56,16 @@ async fn against_us() -> Result<(), Error> {
     })
     .await?;
 
-    let buf = tokio::task::spawn_blocking(|| -> Result<[u8; 5], Error> {
+    let buf = task::spawn(async move {
         let target = TcpListener::bind("127.0.68.1:6888")?;
         let mut feed = TcpStream::connect("127.0.68.1:6222")?;
         feed.write_all(b"hello")?;
         let (mut socket, _us) = target.accept()?;
         let mut buf = [0u8; 5];
         socket.read_exact(&mut buf)?;
-        Ok(buf)
+        Ok::<[u8; 5], Error>(buf)
     })
-    .await??;
+    .await?;
 
     assert_eq!(b"hello", &buf[..]);
 

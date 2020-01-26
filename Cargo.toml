@@ -21,7 +21,7 @@ log = "0.4"
 sha2 = "0.8"
 hmac = "0.7"
 num-bigint = "0.2"
-pin-utils = { version = "0.1.0-alpha.4", optional = true }
+pin-utils = "0.1.0-alpha.4"
 pin-project = "0.4"
 rand = "0.7"
 subtle = "2"
@@ -41,12 +41,6 @@ version = "0.1"
 default-features = false
 version = "0.3"
 
-# server deps
-
-[dependencies.tokio]
-features = ["full"]
-optional = true
-version = "0.2"
 
 # cli deps
 
@@ -69,7 +63,6 @@ pretty_env_logger = "0.3"
 [features]
 default = []
 cli = ["clap", "getopts", "pretty_env_logger"]
-server = ["pin-utils", "tokio"]
 
 
 [[bin]]

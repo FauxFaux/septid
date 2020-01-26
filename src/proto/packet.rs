@@ -34,7 +34,6 @@ pub(crate) fn enpacket(crypto: &mut SessionCrypto, input: &[u8]) -> [u8; PACKET_
     packet
 }
 
-#[cfg(feature = "server")]
 pub(crate) fn unpacket<'s, 'p>(
     crypto: &'s mut SessionCrypto,
     packet: &'p mut [u8],

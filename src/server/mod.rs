@@ -1,19 +1,22 @@
 use std::net;
 use std::net::ToSocketAddrs;
 
+use async_std::net::TcpListener;
+use async_std::net::TcpStream;
+use async_std::task;
 use failure::Error;
+use futures::channel::mpsc;
+use futures::channel::oneshot;
 use futures::future::Either;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpListener;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use futures::stream::StreamExt as _;
+use futures::AsyncReadExt;
+use futures::AsyncWriteExt;
 
 mod stream;
 
-use super::flip_if;
-use super::kex;
 use super::MasterKey;
+use crate::proto::flip_if;
+use crate::proto::kex;
 use stream::decrypt_packets;
 use stream::encrypt_packets;
 
@@ -48,16 +51,16 @@ pub async fn start_server(config: &StartServer) -> Result<mpsc::Sender<Command>,
         }
     }
 
-    let mut shutdowns: Vec<tokio::sync::oneshot::Sender<()>> = Vec::new();
+    let mut shutdowns: Vec<oneshot::Sender<()>> = Vec::new();
 
-    for mut listener in sources {
+    for listener in sources {
         let key = config.key.clone();
         let target_addrs = target_addrs.clone();
         let encrypt = config.encrypt;
-        let (send, recv) = tokio::sync::oneshot::channel();
+        let (send, recv) = oneshot::channel();
         shutdowns.push(send);
         let local_addr = listener.local_addr()?;
-        tokio::spawn(async move {
+        task::spawn(async move {
             let mut recv = recv;
             loop {
                 let accepter = listener.accept();
@@ -78,8 +81,8 @@ pub async fn start_server(config: &StartServer) -> Result<mpsc::Sender<Command>,
         });
     }
 
-    tokio::spawn(async move {
-        command_recv.recv().await;
+    task::spawn(async move {
+        command_recv.next().await;
         for shutdown in shutdowns {
             let _ = shutdown.send(());
         }
@@ -104,7 +107,7 @@ async fn handle_client(
     encrypted.write_all(&to_write).await?;
     encrypted.read_exact(&mut state.buf).await?;
 
-    let (to_write, mut state) = state.step()?;
+    let (to_write, mut state) = state.step();
     encrypted.write_all(&to_write).await?;
     encrypted.read_exact(&mut state.buf).await?;
 
@@ -116,11 +119,11 @@ async fn handle_client(
         encrypted.local_addr()?
     );
 
-    let (plain_read, plain_write) = tokio::io::split(plain);
-    let (encrypted_read, encrypted_write) = tokio::io::split(encrypted);
+    let (plain_read, plain_write) = plain.split();
+    let (encrypted_read, encrypted_write) = encrypted.split();
 
-    tokio::spawn(encrypt_packets(encrypt, plain_read, encrypted_write));
-    tokio::spawn(decrypt_packets(decrypt, encrypted_read, plain_write));
+    task::spawn(encrypt_packets(encrypt, plain_read, encrypted_write));
+    task::spawn(decrypt_packets(decrypt, encrypted_read, plain_write));
 
     Ok(())
 }

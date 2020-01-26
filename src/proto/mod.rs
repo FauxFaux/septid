@@ -3,7 +3,7 @@ pub(crate) mod kex;
 pub(crate) mod named_array;
 pub(crate) mod packet;
 
-fn flip_if<T>(flip: bool, left: T, right: T) -> (T, T) {
+pub(crate) fn flip_if<T>(flip: bool, left: T, right: T) -> (T, T) {
     if flip {
         (right, left)
     } else {

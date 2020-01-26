@@ -1,13 +1,13 @@
 use failure::err_msg;
 use failure::Error;
 use failure::ResultExt;
-use tokio::io::AsyncRead;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWrite;
-use tokio::io::AsyncWriteExt;
+use futures::AsyncRead;
+use futures::AsyncReadExt;
+use futures::AsyncWrite;
+use futures::AsyncWriteExt;
 
-use crate::packet;
-use crate::SessionCrypto;
+use crate::proto::packet;
+use crate::proto::SessionCrypto;
 
 pub(crate) async fn encrypt_packets<F, T>(
     mut crypto: SessionCrypto,
