@@ -23,7 +23,6 @@ use stream::encrypt_packets;
 #[derive(Copy, Clone, Debug)]
 pub enum Command {
     NoNewConnections,
-    Terminate,
 }
 
 pub struct StartServer {
@@ -33,7 +32,12 @@ pub struct StartServer {
     pub encrypt: bool,
 }
 
-pub async fn start_server(config: &StartServer) -> Result<mpsc::Sender<Command>, Error> {
+pub struct Running {
+    commands: mpsc::Sender<Command>,
+    listeners: Vec<task::JoinHandle<Result<(), Error>>>,
+}
+
+pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
     let (command_send, mut command_recv) = mpsc::channel::<Command>(1);
 
     let mut sources = Vec::with_capacity(config.bind_address.len() * 2);
@@ -52,6 +56,7 @@ pub async fn start_server(config: &StartServer) -> Result<mpsc::Sender<Command>,
     }
 
     let mut shutdowns: Vec<oneshot::Sender<()>> = Vec::new();
+    let mut listeners = Vec::with_capacity(sources.len());
 
     for listener in sources {
         let key = config.key.clone();
@@ -60,25 +65,30 @@ pub async fn start_server(config: &StartServer) -> Result<mpsc::Sender<Command>,
         let (send, recv) = oneshot::channel();
         shutdowns.push(send);
         let local_addr = listener.local_addr()?;
-        task::spawn(async move {
+        listeners.push(task::spawn(async move {
             let mut recv = recv;
             loop {
-                let accepter = listener.accept();
-                pin_utils::pin_mut!(accepter);
-                let stream = match futures::future::select(accepter, recv).await {
-                    Either::Left((Ok((stream, client_addr)), remaining)) => {
+                let mut accepter = listener.incoming();
+                let stream = match futures::future::select(accepter.next(), recv).await {
+                    Either::Left((Some(Ok(stream)), remaining)) => {
                         recv = remaining;
-                        log::info!("{:?} {:?}: accepted client", local_addr, client_addr);
+                        log::info!("{:?}: accepted client", local_addr);
                         stream
                     }
-                    _ => break,
+                    Either::Right(..) => {
+                        log::debug!("asked to shutdown, cancelling listen");
+                        break;
+                    }
+                    Either::Left((status, _other)) => {
+                        log::warn!("{:?} causing shutdown", status);
+                        break;
+                    }
                 };
 
-                handle_client(stream, &key, &target_addrs[0], encrypt)
-                    .await
-                    .unwrap();
+                handle_client(stream, &key, &target_addrs[0], encrypt).await?;
             }
-        });
+            Ok::<(), Error>(())
+        }));
     }
 
     task::spawn(async move {
@@ -88,7 +98,10 @@ pub async fn start_server(config: &StartServer) -> Result<mpsc::Sender<Command>,
         }
     });
 
-    Ok(command_send)
+    Ok(Running {
+        commands: command_send,
+        listeners,
+    })
 }
 
 async fn handle_client(
@@ -126,4 +139,19 @@ async fn handle_client(
     task::spawn(decrypt_packets(decrypt, encrypted_read, plain_write));
 
     Ok(())
+}
+
+impl Running {
+    pub async fn request_shutdown(&mut self) -> Result<(), Error> {
+        use futures::sink::SinkExt as _;
+        self.commands.send(Command::NoNewConnections).await?;
+        Ok(())
+    }
+
+    pub async fn run_to_completion(self) -> Result<(), Error> {
+        for listener in self.listeners {
+            listener.await?;
+        }
+        Ok(())
+    }
 }

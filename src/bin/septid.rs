@@ -1,11 +1,16 @@
+use std::cell::Cell;
 use std::env;
 use std::fs;
 
-use failure::err_msg;
 use failure::format_err;
 use failure::ResultExt;
+use septid::server::Command;
 
 fn main() -> Result<(), failure::Error> {
+    async_std::task::block_on(run())
+}
+
+async fn run() -> Result<(), failure::Error> {
     pretty_env_logger::init();
 
     let mut args = env::args();
@@ -35,8 +40,7 @@ fn main() -> Result<(), failure::Error> {
     let matches = match opts.parse(args) {
         Ok(matches) => matches,
         Err(f) => {
-            use std::error::Error as _;
-            eprintln!("error: {}", f.description());
+            eprintln!("error: {}", f);
             return Ok(());
         }
     };
@@ -64,17 +68,28 @@ fn main() -> Result<(), failure::Error> {
     let key = {
         let file = fs::File::open(&key_path)
             .with_context(|_| format_err!("opening key {:?}", key_path))?;
-        septid::load_key(file)?
+        septid::MasterKey::from_reader(file)?
     };
 
-    let (mut server, command) = septid::start_server(&septid::StartServer {
+    let command = septid::server::start_server(&septid::server::StartServer {
         bind_address: vec![addr],
         encrypt,
         key,
         target_address: vec![target],
-    })?;
+    })
+    .await?;
 
-    loop {
-        septid::tick(&mut server)?;
-    }
+    //    let command = Cell::new(Some(command));
+    //
+    //    ctrlc::set_handler(move || {
+    //        if let Some(mut command) = command.take() {
+    //            unimplemented!();
+    ////            command.request_shutdown()
+    ////                .expect("we're the only sender; maybe the server is already gone?");
+    //        }
+    //    })?;
+
+    command.run_to_completion().await?;
+
+    Ok(())
 }

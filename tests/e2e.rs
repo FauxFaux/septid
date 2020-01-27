@@ -2,7 +2,6 @@ use async_std::net::TcpListener;
 use async_std::net::TcpStream;
 use async_std::task;
 use failure::Error;
-use futures::sink::SinkExt as _;
 use futures::AsyncReadExt as _;
 use futures::AsyncWriteExt as _;
 
@@ -14,7 +13,7 @@ fn stop() -> Result<(), Error> {
 async fn test_stop() -> Result<(), Error> {
     let key = septid::MasterKey::from_slice(&[0u8; 32]);
 
-    let mut sender = septid::server::start_server(&septid::server::StartServer {
+    let mut server = septid::server::start_server(&septid::server::StartServer {
         key,
         bind_address: vec!["127.0.68.1:6254".to_string()],
         target_address: vec!["127.0.68.1:6255".to_string()],
@@ -22,7 +21,7 @@ async fn test_stop() -> Result<(), Error> {
     })
     .await?;
 
-    let handle = task::spawn(async move { sender.send(septid::server::Command::Terminate).await });
+    let handle = task::spawn(async move { server.request_shutdown().await });
 
     handle.await?;
 
@@ -65,8 +64,11 @@ async fn test_against_us() -> Result<(), Error> {
         assert_eq!(b"hello", &buf[..]);
     }
 
-    enc.send(septid::server::Command::Terminate).await?;
-    dec.send(septid::server::Command::Terminate).await?;
+    enc.request_shutdown().await?;
+    dec.request_shutdown().await?;
+
+    enc.run_to_completion().await?;
+    dec.run_to_completion().await?;
 
     Ok(())
 }
