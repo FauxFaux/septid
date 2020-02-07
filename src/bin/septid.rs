@@ -1,17 +1,17 @@
 use std::env;
 use std::fs;
 
+use async_std::task;
 use failure::format_err;
 use failure::ResultExt;
 use septid::server::Command;
 
 fn main() -> Result<(), failure::Error> {
-    async_std::task::block_on(run())
+    pretty_env_logger::init();
+    task::block_on(run())
 }
 
 async fn run() -> Result<(), failure::Error> {
-    pretty_env_logger::init();
-
     let mut args = env::args();
     let _us = args.next().unwrap_or_else(String::new);
     let mut opts = getopts::Options::new();
