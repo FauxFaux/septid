@@ -4,13 +4,14 @@ use std::net::ToSocketAddrs;
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
 use async_std::task;
+use async_std::task::JoinHandle;
 use failure::Error;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
-use futures::future::Either;
-use futures::stream::StreamExt as _;
+use futures::stream::{FuturesUnordered, StreamExt};
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
+use futures::FutureExt as _;
 
 mod stream;
 
@@ -34,7 +35,7 @@ pub struct StartServer {
 
 pub struct Running {
     commands: mpsc::Sender<Command>,
-    listeners: Vec<task::JoinHandle<Result<(), Error>>>,
+    listeners: FuturesUnordered<JoinHandle<Result<(), Error>>>,
 }
 
 pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
@@ -48,42 +49,38 @@ pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
     }
 
     for source in &config.bind_address {
-        for source in source.to_socket_addrs()? {
-            let listener = TcpListener::bind(&source).await?;
-            log::info!("{:?}: listening", source);
-            sources.push(listener);
-        }
+        let listener = TcpListener::bind(&source).await?;
+        log::info!("{:?}: listening", source);
+        sources.push(listener);
     }
 
     let mut shutdowns: Vec<oneshot::Sender<()>> = Vec::new();
-    let mut listeners = Vec::with_capacity(sources.len());
+    let listeners = FuturesUnordered::new();
 
     for listener in sources {
         let key = config.key.clone();
         let target_addrs = target_addrs.clone();
         let encrypt = config.encrypt;
         let (send, recv) = oneshot::channel();
+        let mut recv = recv.fuse();
         shutdowns.push(send);
         let local_addr = listener.local_addr()?;
         listeners.push(task::spawn(async move {
-            let mut recv = recv;
+            let mut accepter = listener.incoming().fuse();
             loop {
-                let mut accepter = listener.incoming();
-                let stream = match futures::future::select(accepter.next(), recv).await {
-                    Either::Left((Some(Ok(stream)), remaining)) => {
-                        recv = remaining;
-                        log::info!("{:?}: accepted client", local_addr);
-                        stream
-                    }
-                    Either::Right(..) => {
+                let stream = futures::select! {
+                    stream = accepter.next() => stream,
+                    _command = recv => {
                         log::debug!("asked to shutdown, cancelling listen");
                         break;
-                    }
-                    Either::Left((status, _other)) => {
-                        log::warn!("{:?} causing shutdown", status);
+                    },
+                    complete => {
+                        log::warn!("listener exiting as everyone has left us alone");
                         break;
-                    }
+                    },
                 };
+
+                let stream = stream.expect("TcpListener stream is infinite")?;
 
                 handle_client(stream, &key, &target_addrs[0], encrypt).await?;
             }
@@ -148,9 +145,9 @@ impl Running {
         Ok(())
     }
 
-    pub async fn run_to_completion(self) -> Result<(), Error> {
-        for listener in self.listeners {
-            listener.await?;
+    pub async fn run_to_completion(mut self) -> Result<(), Error> {
+        while let Some(listener) = self.listeners.next().await {
+            listener?;
         }
         Ok(())
     }
