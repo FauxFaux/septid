@@ -4,14 +4,15 @@ use std::net::ToSocketAddrs;
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
 use async_std::task;
-use async_std::task::JoinHandle;
 use failure::Error;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
-use futures::stream::{FuturesUnordered, StreamExt};
-use futures::AsyncReadExt;
-use futures::AsyncWriteExt;
+use futures::stream::FuturesUnordered;
+use futures::stream::StreamExt as _;
+use futures::AsyncReadExt as _;
+use futures::AsyncWriteExt as _;
 use futures::FutureExt as _;
+use futures::future::join;
 
 mod stream;
 
@@ -35,7 +36,7 @@ pub struct StartServer {
 
 pub struct Running {
     commands: mpsc::Sender<Command>,
-    listeners: FuturesUnordered<JoinHandle<Result<(), Error>>>,
+    listeners: FuturesUnordered<task::JoinHandle<Result<(), Error>>>,
 }
 
 pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
@@ -64,9 +65,9 @@ pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
         let (send, recv) = oneshot::channel();
         let mut recv = recv.fuse();
         shutdowns.push(send);
-        let local_addr = listener.local_addr()?;
         listeners.push(task::spawn(async move {
             let mut accepter = listener.incoming().fuse();
+            let mut workers = FuturesUnordered::new();
             loop {
                 let stream = futures::select! {
                     stream = accepter.next() => stream,
@@ -74,6 +75,7 @@ pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
                         log::debug!("asked to shutdown, cancelling listen");
                         break;
                     },
+                    _worker = workers.next() => continue,
                     complete => {
                         log::warn!("listener exiting as everyone has left us alone");
                         break;
@@ -82,8 +84,18 @@ pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
 
                 let stream = stream.expect("TcpListener stream is infinite")?;
 
-                handle_client(stream, &key, &target_addrs[0], encrypt).await?;
+                workers.push(task::spawn(handle_client(
+                    stream,
+                    key.clone(),
+                    target_addrs[0].clone(),
+                    encrypt,
+                )));
             }
+
+            while let Some(worker) = workers.next().await {
+                worker?;
+            }
+
             Ok::<(), Error>(())
         }));
     }
@@ -103,8 +115,8 @@ pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
 
 async fn handle_client(
     accepted: TcpStream,
-    key: &MasterKey,
-    target_addr: &net::SocketAddr,
+    key: MasterKey,
+    target_addr: net::SocketAddr,
     encrypt: bool,
 ) -> Result<(), Error> {
     let decrypt = !encrypt;
@@ -132,8 +144,14 @@ async fn handle_client(
     let (plain_read, plain_write) = plain.split();
     let (encrypted_read, encrypted_write) = encrypted.split();
 
-    task::spawn(encrypt_packets(encrypt, plain_read, encrypted_write));
-    task::spawn(decrypt_packets(decrypt, encrypted_read, plain_write));
+    let (enc, dec) = join(
+        encrypt_packets(encrypt, plain_read, encrypted_write),
+        decrypt_packets(decrypt, encrypted_read, plain_write),
+    )
+    .await;
+
+    enc?;
+    dec?;
 
     Ok(())
 }
