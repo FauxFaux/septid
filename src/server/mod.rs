@@ -5,14 +5,13 @@ use async_std::net::TcpListener;
 use async_std::net::TcpStream;
 use async_std::task;
 use failure::Error;
-use futures::channel::mpsc;
 use futures::channel::oneshot;
+use futures::future::join;
 use futures::stream::FuturesUnordered;
 use futures::stream::StreamExt as _;
 use futures::AsyncReadExt as _;
 use futures::AsyncWriteExt as _;
 use futures::FutureExt as _;
-use futures::future::join;
 
 mod stream;
 
@@ -22,11 +21,6 @@ use crate::proto::kex;
 use stream::decrypt_packets;
 use stream::encrypt_packets;
 
-#[derive(Copy, Clone, Debug)]
-pub enum Command {
-    NoNewConnections,
-}
-
 pub struct StartServer {
     pub key: MasterKey,
     pub bind_address: Vec<String>,
@@ -35,43 +29,33 @@ pub struct StartServer {
 }
 
 pub struct Running {
-    commands: mpsc::Sender<Command>,
+    shutdown_send: Option<oneshot::Sender<()>>,
     listeners: FuturesUnordered<task::JoinHandle<Result<(), Error>>>,
 }
 
 pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
-    let (command_send, mut command_recv) = mpsc::channel::<Command>(1);
-
-    let mut sources = Vec::with_capacity(config.bind_address.len() * 2);
-
     let mut target_addrs = Vec::with_capacity(config.target_address.len() * 2);
     for target in &config.target_address {
         target_addrs.extend(target.to_socket_addrs()?);
     }
 
-    for source in &config.bind_address {
-        let listener = TcpListener::bind(&source).await?;
-        log::info!("{:?}: listening", source);
-        sources.push(listener);
-    }
-
-    let mut shutdowns: Vec<oneshot::Sender<()>> = Vec::new();
+    let (shutdown_send, shutdown_recv) = oneshot::channel();
+    let shutdown_recv = shutdown_recv.shared();
     let listeners = FuturesUnordered::new();
 
-    for listener in sources {
+    for source in &config.bind_address {
+        let listener = TcpListener::bind(source).await?;
         let key = config.key.clone();
         let target_addrs = target_addrs.clone();
         let encrypt = config.encrypt;
-        let (send, recv) = oneshot::channel();
-        let mut recv = recv.fuse();
-        shutdowns.push(send);
+        let mut shutdown_recv = shutdown_recv.clone();
         listeners.push(task::spawn(async move {
             let mut accepter = listener.incoming().fuse();
             let mut workers = FuturesUnordered::new();
             loop {
                 let stream = futures::select! {
                     stream = accepter.next() => stream,
-                    _command = recv => {
+                    _ = shutdown_recv => {
                         log::debug!("asked to shutdown, cancelling listen");
                         break;
                     },
@@ -100,15 +84,8 @@ pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
         }));
     }
 
-    task::spawn(async move {
-        command_recv.next().await;
-        for shutdown in shutdowns {
-            let _ = shutdown.send(());
-        }
-    });
-
     Ok(Running {
-        commands: command_send,
+        shutdown_send: Some(shutdown_send),
         listeners,
     })
 }
@@ -158,8 +135,11 @@ async fn handle_client(
 
 impl Running {
     pub async fn request_shutdown(&mut self) -> Result<(), Error> {
-        use futures::sink::SinkExt as _;
-        self.commands.send(Command::NoNewConnections).await?;
+        let _result_void_void = self
+            .shutdown_send
+            .take()
+            .ok_or(failure::err_msg("already requested"))?
+            .send(());
         Ok(())
     }
 

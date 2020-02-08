@@ -4,7 +4,6 @@ use std::fs;
 use async_std::task;
 use failure::format_err;
 use failure::ResultExt;
-use septid::server::Command;
 
 fn main() -> Result<(), failure::Error> {
     pretty_env_logger::init();
