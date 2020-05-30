@@ -2,15 +2,15 @@ use std::env;
 use std::fs;
 
 use async_std::task;
-use failure::format_err;
-use failure::ResultExt;
+use anyhow::format_err;
+use anyhow::Context as _;
 
-fn main() -> Result<(), failure::Error> {
+fn main() -> Result<(), anyhow::Error> {
     pretty_env_logger::init();
     task::block_on(run())
 }
 
-async fn run() -> Result<(), failure::Error> {
+async fn run() -> Result<(), anyhow::Error> {
     let mut args = env::args();
     let _us = args.next().unwrap_or_else(String::new);
     let mut opts = getopts::Options::new();
@@ -65,7 +65,7 @@ async fn run() -> Result<(), failure::Error> {
 
     let key = {
         let file = fs::File::open(&key_path)
-            .with_context(|_| format_err!("opening key {:?}", key_path))?;
+            .with_context(|| format_err!("opening key {:?}", key_path))?;
         septid::MasterKey::from_reader(file)?
     };
 

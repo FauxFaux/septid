@@ -1,6 +1,6 @@
-use failure::err_msg;
-use failure::Error;
-use failure::ResultExt;
+use anyhow::anyhow;
+use anyhow::Result;
+use anyhow::Context as _;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
 use futures::AsyncWrite;
@@ -13,7 +13,7 @@ pub(crate) async fn encrypt_packets<F, T>(
     mut crypto: SessionCrypto,
     mut from: F,
     mut to: T,
-) -> Result<(), Error>
+) -> Result<()>
 where
     F: Unpin + AsyncRead,
     T: Unpin + AsyncWrite,
@@ -34,7 +34,7 @@ pub(crate) async fn decrypt_packets<F, T>(
     mut crypto: SessionCrypto,
     mut from: F,
     mut to: T,
-) -> Result<(), Error>
+) -> Result<()>
 where
     F: Unpin + AsyncRead,
     T: Unpin + AsyncWrite,
@@ -43,8 +43,8 @@ where
     loop {
         from.read_exact(&mut buf)
             .await
-            .with_context(|_| err_msg("taking a packet from the wire"))?;
-        let output = packet::unpacket(&mut crypto, buf.as_mut()).map_err(failure::err_msg)?;
+            .with_context(|| anyhow!("taking a packet from the wire"))?;
+        let output = packet::unpacket(&mut crypto, buf.as_mut()).map_err(|e| anyhow!(e))?;
         to.write_all(output).await?;
     }
 }

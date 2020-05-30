@@ -4,7 +4,7 @@ use std::net::ToSocketAddrs;
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
 use async_std::task;
-use failure::Error;
+use anyhow::Error;
 use futures::channel::oneshot;
 use futures::future::join;
 use futures::stream::FuturesUnordered;
@@ -138,7 +138,7 @@ impl Running {
         let _result_void_void = self
             .shutdown_send
             .take()
-            .ok_or(failure::err_msg("already requested"))?
+            .ok_or(anyhow::anyhow!("already requested"))?
             .send(());
         Ok(())
     }

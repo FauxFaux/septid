@@ -2,9 +2,9 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 
-use failure::err_msg;
-use failure::Error;
-use failure::ResultExt;
+use anyhow::anyhow;
+use anyhow::Error;
+use anyhow::Context as _;
 
 use crate::proto::kex;
 use crate::proto::packet;
@@ -27,7 +27,7 @@ impl<S: Write + Read> SPipe<S> {
     /// This method will block until the session is established.
     pub fn negotiate(key: MasterKey, mut inner: S) -> Result<SPipe<S>, Error> {
         let crypto =
-            drive_exchange(key, &mut inner).with_context(|_| err_msg("negotiating with server"))?;
+            drive_exchange(key, &mut inner).with_context(|| anyhow!("negotiating with server"))?;
         Ok(SPipe { inner, crypto })
     }
 }
@@ -36,17 +36,17 @@ fn drive_exchange<S: Read + Write>(key: MasterKey, mut inner: S) -> Result<Sessi
     let (to_write, mut kex) = kex::Kex::new(key, false);
     inner
         .write_all(&to_write)
-        .with_context(|_| err_msg("sending opening message to server"))?;
+        .with_context(|| anyhow!("sending opening message to server"))?;
     inner
         .read_exact(&mut kex.buf)
-        .with_context(|_| err_msg("reading server's opening message"))?;
+        .with_context(|| anyhow!("reading server's opening message"))?;
 
     let (to_write, mut kex) = kex.step();
     inner
         .write_all(&to_write)
-        .with_context(|_| err_msg("responding to server's challenge"))?;
-    inner.read_exact(&mut kex.buf).with_context(|_| {
-        err_msg(concat!(
+        .with_context(|| anyhow!("responding to server's challenge"))?;
+    inner.read_exact(&mut kex.buf).with_context(|| {
+        anyhow!(concat!(
             "reading server's challenge response,",
             " failure can mean our key is wrong,",
             " or there are no backends available"
@@ -55,7 +55,7 @@ fn drive_exchange<S: Read + Write>(key: MasterKey, mut inner: S) -> Result<Sessi
 
     let kex::Done { encrypt, .. } = kex
         .step()
-        .with_context(|_| err_msg("validating handshake from server"))?;
+        .with_context(|| anyhow!("validating handshake from server"))?;
 
     Ok(encrypt)
 }

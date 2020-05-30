@@ -1,7 +1,7 @@
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
 use async_std::task;
-use failure::Error;
+use anyhow::Error;
 use futures::AsyncReadExt as _;
 use futures::AsyncWriteExt as _;
 

@@ -3,9 +3,9 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use failure::err_msg;
-use failure::Error;
-use failure::ResultExt;
+use anyhow::anyhow;
+use anyhow::Error;
+use anyhow::Context as _;
 use futures::io::BufWriter;
 use futures::AsyncRead;
 use futures::AsyncReadExt as _;
@@ -32,7 +32,7 @@ impl<S: AsyncWrite + AsyncRead + Unpin> SPipe<S> {
     pub async fn negotiate(key: MasterKey, mut inner: S) -> Result<SPipe<S>, Error> {
         let crypto = drive_exchange(key, &mut inner)
             .await
-            .with_context(|_| err_msg("negotiating with server"))?;
+            .with_context(|| anyhow!("negotiating with server"))?;
         Ok(SPipe {
             inner: BufWriter::with_capacity(packet::PACKET_LEN, inner),
             crypto,
@@ -48,19 +48,19 @@ async fn drive_exchange<S: AsyncRead + AsyncWrite + Unpin>(
     inner
         .write_all(&to_write)
         .await
-        .with_context(|_| err_msg("sending opening message to server"))?;
+        .with_context(|| anyhow!("sending opening message to server"))?;
     inner
         .read_exact(&mut kex.buf)
         .await
-        .with_context(|_| err_msg("reading server's opening message"))?;
+        .with_context(|| anyhow!("reading server's opening message"))?;
 
     let (to_write, mut kex) = kex.step();
     inner
         .write_all(&to_write)
         .await
-        .with_context(|_| err_msg("responding to server's challenge"))?;
-    inner.read_exact(&mut kex.buf).await.with_context(|_| {
-        err_msg(concat!(
+        .with_context(|| anyhow!("responding to server's challenge"))?;
+    inner.read_exact(&mut kex.buf).await.with_context(|| {
+        anyhow!(concat!(
             "reading server's challenge response,",
             " failure can mean our key is wrong,",
             " or there are no backends available"
@@ -69,7 +69,7 @@ async fn drive_exchange<S: AsyncRead + AsyncWrite + Unpin>(
 
     let kex::Done { encrypt, .. } = kex
         .step()
-        .with_context(|_| err_msg("validating handshake from server"))?;
+        .with_context(|| anyhow!("validating handshake from server"))?;
 
     Ok(encrypt)
 }

@@ -4,8 +4,8 @@ use aes_ctr::stream_cipher::NewStreamCipher;
 use aes_ctr::stream_cipher::SyncStreamCipher;
 use aes_ctr::Aes256Ctr;
 use crypto_mac::Mac;
-use failure::ensure;
-use failure::Error;
+use anyhow::ensure;
+use anyhow::Error;
 use num_bigint::BigUint;
 use subtle::ConstantTimeEq;
 

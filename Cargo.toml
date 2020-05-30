@@ -13,6 +13,7 @@ license = "MIT OR Apache-2.0"
 edition = "2018"
 
 [dependencies]
+anyhow = "1.0"
 aes-ctr = "0.3"
 async-std = "1"
 crypto-mac = "0.7"
@@ -28,12 +29,6 @@ zeroize = "1"
 
 
 # fiddled dependencies
-
-[dependencies.failure]
-# features -= failure_derive (big dependencies)
-default-features = false
-features = ["std"]
-version = "0.1"
 
 [dependencies.pbkdf2]
 # features -= simple (big dependencies)
