@@ -3,9 +3,9 @@ use std::io;
 use aes_ctr::stream_cipher::NewStreamCipher;
 use aes_ctr::stream_cipher::SyncStreamCipher;
 use aes_ctr::Aes256Ctr;
-use crypto_mac::Mac;
 use anyhow::ensure;
-use anyhow::Error;
+use anyhow::Result;
+use crypto_mac::Mac;
 use num_bigint::BigUint;
 use subtle::ConstantTimeEq;
 
@@ -76,7 +76,7 @@ pub(crate) fn y_h_to_keys(
     our_x: &XParam,
     nonces: &BothNonces,
     y_h: &[u8],
-) -> Result<(SessionCrypto, SessionCrypto), Error> {
+) -> Result<(SessionCrypto, SessionCrypto)> {
     let (their_y, their_mac) = y_h.split_at(YParam::BYTES);
 
     let expected_mac = {

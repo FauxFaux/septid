@@ -4,8 +4,8 @@ use std::task::Context;
 use std::task::Poll;
 
 use anyhow::anyhow;
-use anyhow::Error;
 use anyhow::Context as _;
+use anyhow::Result;
 use futures::io::BufWriter;
 use futures::AsyncRead;
 use futures::AsyncReadExt as _;
@@ -29,7 +29,7 @@ impl<S: AsyncWrite + AsyncRead + Unpin> SPipe<S> {
     /// Negotiate a session (which requires reading and writing), then switch to write-only mode.
     ///
     /// This method will not complete until the session is fully established.
-    pub async fn negotiate(key: MasterKey, mut inner: S) -> Result<SPipe<S>, Error> {
+    pub async fn negotiate(key: MasterKey, mut inner: S) -> Result<SPipe<S>> {
         let crypto = drive_exchange(key, &mut inner)
             .await
             .with_context(|| anyhow!("negotiating with server"))?;
@@ -43,7 +43,7 @@ impl<S: AsyncWrite + AsyncRead + Unpin> SPipe<S> {
 async fn drive_exchange<S: AsyncRead + AsyncWrite + Unpin>(
     key: MasterKey,
     mut inner: S,
-) -> Result<SessionCrypto, Error> {
+) -> Result<SessionCrypto> {
     let (to_write, mut kex) = kex::Kex::new(key, false);
     inner
         .write_all(&to_write)

@@ -1,16 +1,17 @@
 use std::env;
 use std::fs;
 
-use async_std::task;
-use anyhow::format_err;
+use anyhow::anyhow;
 use anyhow::Context as _;
+use anyhow::Result;
+use async_std::task;
 
-fn main() -> Result<(), anyhow::Error> {
+fn main() -> Result<()> {
     pretty_env_logger::init();
     task::block_on(run())
 }
 
-async fn run() -> Result<(), anyhow::Error> {
+async fn run() -> Result<()> {
     let mut args = env::args();
     let _us = args.next().unwrap_or_else(String::new);
     let mut opts = getopts::Options::new();
@@ -64,8 +65,8 @@ async fn run() -> Result<(), anyhow::Error> {
     assert!(!matches.opt_present("u"), "-u unsupported");
 
     let key = {
-        let file = fs::File::open(&key_path)
-            .with_context(|| format_err!("opening key {:?}", key_path))?;
+        let file =
+            fs::File::open(&key_path).with_context(|| anyhow!("opening key {:?}", key_path))?;
         septid::MasterKey::from_reader(file)?
     };
 

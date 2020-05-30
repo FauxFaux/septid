@@ -1,4 +1,4 @@
-use anyhow::Error;
+use anyhow::Result;
 
 use super::crypto::BothNonces;
 use super::crypto::MacKey;
@@ -80,7 +80,7 @@ impl Kex {
 }
 
 impl NonceReceived {
-    pub(crate) fn step(self) -> Result<Done, Error> {
+    pub(crate) fn step(self) -> Result<Done> {
         let (client, server) = super::crypto::y_h_to_keys(
             &self.kex.key,
             &self.their_dh_mac_key,

@@ -3,8 +3,8 @@ use std::io::Read;
 use std::io::Write;
 
 use anyhow::anyhow;
-use anyhow::Error;
 use anyhow::Context as _;
+use anyhow::Result;
 
 use crate::proto::kex;
 use crate::proto::packet;
@@ -25,14 +25,14 @@ impl<S: Write + Read> SPipe<S> {
     /// Negotiate a session (which requires reading and writing), then switch to write-only mode.
     ///
     /// This method will block until the session is established.
-    pub fn negotiate(key: MasterKey, mut inner: S) -> Result<SPipe<S>, Error> {
+    pub fn negotiate(key: MasterKey, mut inner: S) -> Result<SPipe<S>> {
         let crypto =
             drive_exchange(key, &mut inner).with_context(|| anyhow!("negotiating with server"))?;
         Ok(SPipe { inner, crypto })
     }
 }
 
-fn drive_exchange<S: Read + Write>(key: MasterKey, mut inner: S) -> Result<SessionCrypto, Error> {
+fn drive_exchange<S: Read + Write>(key: MasterKey, mut inner: S) -> Result<SessionCrypto> {
     let (to_write, mut kex) = kex::Kex::new(key, false);
     inner
         .write_all(&to_write)

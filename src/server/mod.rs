@@ -1,10 +1,10 @@
 use std::net;
 use std::net::ToSocketAddrs;
 
+use anyhow::Result;
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
 use async_std::task;
-use anyhow::Error;
 use futures::channel::oneshot;
 use futures::future::join;
 use futures::stream::FuturesUnordered;
@@ -30,10 +30,10 @@ pub struct StartServer {
 
 pub struct Running {
     shutdown_send: Option<oneshot::Sender<()>>,
-    listeners: FuturesUnordered<task::JoinHandle<Result<(), Error>>>,
+    listeners: FuturesUnordered<task::JoinHandle<Result<()>>>,
 }
 
-pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
+pub async fn start_server(config: &StartServer) -> Result<Running> {
     let mut target_addrs = Vec::with_capacity(config.target_address.len() * 2);
     for target in &config.target_address {
         target_addrs.extend(target.to_socket_addrs()?);
@@ -80,7 +80,7 @@ pub async fn start_server(config: &StartServer) -> Result<Running, Error> {
                 worker?;
             }
 
-            Ok::<(), Error>(())
+            Ok::<(), anyhow::Error>(())
         }));
     }
 
@@ -95,7 +95,7 @@ async fn handle_client(
     key: MasterKey,
     target_addr: net::SocketAddr,
     encrypt: bool,
-) -> Result<(), Error> {
+) -> Result<()> {
     let decrypt = !encrypt;
 
     let initiated = TcpStream::connect(&target_addr).await?;
@@ -134,7 +134,7 @@ async fn handle_client(
 }
 
 impl Running {
-    pub async fn request_shutdown(&mut self) -> Result<(), Error> {
+    pub async fn request_shutdown(&mut self) -> Result<()> {
         let _result_void_void = self
             .shutdown_send
             .take()
@@ -143,7 +143,7 @@ impl Running {
         Ok(())
     }
 
-    pub async fn run_to_completion(mut self) -> Result<(), Error> {
+    pub async fn run_to_completion(mut self) -> Result<()> {
         while let Some(listener) = self.listeners.next().await {
             listener?;
         }

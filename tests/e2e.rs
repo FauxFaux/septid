@@ -1,16 +1,16 @@
+use anyhow::Result;
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
 use async_std::task;
-use anyhow::Error;
 use futures::AsyncReadExt as _;
 use futures::AsyncWriteExt as _;
 
 #[test]
-fn stop() -> Result<(), Error> {
+fn stop() -> Result<()> {
     task::block_on(test_stop())
 }
 
-async fn test_stop() -> Result<(), Error> {
+async fn test_stop() -> Result<()> {
     let key = septid::MasterKey::from_slice(&[0u8; 32]);
 
     let mut server = septid::server::start_server(&septid::server::StartServer {
@@ -29,11 +29,11 @@ async fn test_stop() -> Result<(), Error> {
 }
 
 #[test]
-fn against_us() -> Result<(), Error> {
+fn against_us() -> Result<()> {
     task::block_on(test_against_us())
 }
 
-async fn test_against_us() -> Result<(), Error> {
+async fn test_against_us() -> Result<()> {
     pretty_env_logger::init();
 
     let key = septid::MasterKey::from_slice(&[0u8; 32]);
