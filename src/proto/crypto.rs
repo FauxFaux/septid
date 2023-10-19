@@ -1,7 +1,7 @@
 use std::io;
 
-use aes_ctr::stream_cipher::NewStreamCipher;
-use aes_ctr::stream_cipher::SyncStreamCipher;
+use aes_ctr::cipher::stream::NewStreamCipher;
+use aes_ctr::cipher::stream::SyncStreamCipher;
 use aes_ctr::Aes256Ctr;
 use anyhow::ensure;
 use anyhow::Result;

@@ -5,20 +5,20 @@ use anyhow::anyhow;
 use anyhow::Context as _;
 use anyhow::Result;
 use async_std::task;
-use clap::Clap;
+use clap::Parser;
 
 fn main() -> Result<()> {
     pretty_env_logger::init();
     task::block_on(run())
 }
 
-#[derive(Clap)]
-enum EncDec {
-    Encrypt,
-    Decryp,
-}
+// #[derive(clap::Parser)]
+// enum EncDec {
+//     Encrypt,
+//     Decryp,
+// }
 
-#[derive(Clap)]
+#[derive(Parser)]
 #[clap(author, about, version, group = clap::ArgGroup::new("mode").required(true))]
 struct Opts {
     /// forward data over an encrypted connection
