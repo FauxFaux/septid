@@ -1,6 +1,6 @@
 [package]
 name = "septid"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Chris West (Faux) <git@goeswhere.com>"]
 
 description = "Pure Rust implementation of the spiped protocol"
