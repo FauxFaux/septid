@@ -10,7 +10,7 @@ readme = "README.md"
 categories = ["cryptography", "network-programming"]
 license = "MIT OR Apache-2.0"
 
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
