@@ -1,4 +1,3 @@
-use std::net::Shutdown;
 use anyhow::Result;
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
@@ -6,6 +5,7 @@ use async_std::task;
 use futures::AsyncReadExt as _;
 use futures::AsyncWriteExt as _;
 use log::info;
+use std::net::Shutdown;
 
 #[test]
 fn stop() -> Result<()> {
@@ -39,7 +39,6 @@ fn against_us() -> Result<()> {
 }
 
 async fn test_against_us() -> Result<()> {
-
     let key = septid::MasterKey::from_slice(&[0u8; 32]);
 
     let mut enc = septid::server::start_server(&septid::server::StartServer {
