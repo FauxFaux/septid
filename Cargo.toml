@@ -17,24 +17,18 @@ anyhow = "1.0"
 aes-ctr = "0.6"
 async-std = "1"
 clap = { version = "4", features = ["derive", "cargo"] }
-crypto-mac = "0.7"
+crypto-mac = "0.11"
 futures = "0.3"
 log = "0.4"
-sha2 = "0.8"
-hmac = "0.7"
+sha2 = "0.10"
+hmac = {  version = "0.12", features = ["std"] }
 num-bigint = "0.4"
+pbkdf2 = "0.12"
 pin-project = "1"
 rand = "0.8"
 subtle = "2"
 zeroize = "1"
 
-
-# fiddled dependencies
-
-[dependencies.pbkdf2]
-# features -= simple (big dependencies)
-default-features = false
-version = "0.3"
 
 
 # cli deps

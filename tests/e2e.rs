@@ -4,7 +4,6 @@ use async_std::net::TcpStream;
 use async_std::task;
 use futures::AsyncReadExt as _;
 use futures::AsyncWriteExt as _;
-use log::info;
 use std::net::Shutdown;
 
 #[test]

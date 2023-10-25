@@ -21,15 +21,15 @@ pub(crate) fn enpacket(crypto: &mut SessionCrypto, input: &[u8]) -> [u8; PACKET_
 
     let packet_number = crypto::aes_ctr(crypto, &mut packet[..PACKET_MESSAGE_ENCRYPTED_LEN]);
 
+    use hmac::Mac;
     let mac = {
-        use crypto_mac::Mac;
         let mut computer = crypto.mac.begin();
-        computer.input(&packet[..PACKET_MESSAGE_ENCRYPTED_LEN]);
-        computer.input(&packet_number.to_be_bytes());
-        computer.result().code()
+        computer.update(&packet[..PACKET_MESSAGE_ENCRYPTED_LEN]);
+        computer.update(&packet_number.to_be_bytes());
+        computer.finalize()
     };
 
-    (&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..]).copy_from_slice(&mac);
+    (&mut packet[PACKET_MESSAGE_ENCRYPTED_LEN..]).copy_from_slice(&mac.into_bytes());
 
     packet
 }
@@ -49,15 +49,15 @@ pub(crate) fn unpacket<'s, 'p>(
     let (msg_encrypted, mac_actual) = packet.as_mut().split_at_mut(PACKET_MESSAGE_ENCRYPTED_LEN);
 
     let mac_expected = {
-        use crypto_mac::Mac;
+        use hmac::Mac;
         let mut computer = crypto.mac.begin();
-        computer.input(msg_encrypted);
-        computer.input(&crypto.packet_number.to_be_bytes());
-        computer.result().code()
+        computer.update(msg_encrypted);
+        computer.update(&crypto.packet_number.to_be_bytes());
+        computer.finalize()
     };
 
     use subtle::ConstantTimeEq as _;
-    if 1 != mac_expected.ct_eq(&mac_actual).unwrap_u8() {
+    if 1 != mac_expected.into_bytes().ct_eq(&mac_actual).unwrap_u8() {
         return Err("packet mac bad");
     }
 

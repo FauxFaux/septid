@@ -5,7 +5,7 @@ use aes_ctr::cipher::stream::SyncStreamCipher;
 use aes_ctr::Aes256Ctr;
 use anyhow::ensure;
 use anyhow::Result;
-use crypto_mac::Mac;
+use hmac::Mac;
 use num_bigint::BigUint;
 use subtle::ConstantTimeEq;
 
@@ -39,7 +39,8 @@ pub(crate) fn generate_y_reply(
     let nonces = BothNonces(nonces);
 
     let mut double_dk = [0u8; 32 * 2];
-    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &nonces.0, 1, &mut double_dk);
+    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &nonces.0, 1, &mut double_dk)
+        .expect("fixed size arrays being fed to pbkdf2");
 
     let dh_mac_client = MacKey::from_slice(&double_dk[..32]);
     let dh_mac_server = MacKey::from_slice(&double_dk[32..]);
@@ -58,14 +59,14 @@ pub(crate) fn generate_y_reply(
 
     let y_mac = {
         let mut computer = dh_mac_ours.begin();
-        computer.input(&our_y);
-        computer.result().code()
+        computer.update(&our_y);
+        computer.finalize()
     };
 
     let mut response = [0u8; Y_H_LEN];
 
     response[..YParam::BYTES].copy_from_slice(&our_y);
-    response[YParam::BYTES..].copy_from_slice(&y_mac);
+    response[YParam::BYTES..].copy_from_slice(&y_mac.into_bytes());
 
     (response, nonces, dh_mac_theirs)
 }
@@ -81,10 +82,13 @@ pub(crate) fn y_h_to_keys(
 
     let expected_mac = {
         let mut computer = their_dh_mac_key.begin();
-        computer.input(their_y);
-        computer.result().code()
+        computer.update(their_y);
+        computer.finalize()
     };
-    ensure!(expected_mac.ct_eq(&their_mac).unwrap_u8() == 1, "bad mac");
+    ensure!(
+        expected_mac.into_bytes().ct_eq(&their_mac).unwrap_u8() == 1,
+        "bad mac"
+    );
 
     let their_y = BigUint::from_bytes_be(their_y);
     let prime = BigUint::from_bytes_be(&GROUP_14_PRIME.0);
@@ -100,7 +104,7 @@ pub(crate) fn y_h_to_keys(
     buf.extend_from_slice(&shared);
 
     let mut quad_dk = [0u8; EncKey::BYTES * 2 + MacKey::BYTES * 2];
-    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &buf, 1, &mut quad_dk);
+    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(&key.0, &buf, 1, &mut quad_dk)?;
 
     let client = two_keys(&quad_dk[..64]);
     let server = two_keys(&quad_dk[64..]);
@@ -150,18 +154,17 @@ impl MasterKey {
     /// e.g. `dd if=/dev/urandom of=my.key bs=1 count=64`
     pub fn from_reader<R: io::Read>(mut from: R) -> io::Result<MasterKey> {
         use sha2::digest::Digest as _;
-        use sha2::digest::FixedOutput as _;
 
         let mut ctx = sha2::Sha256::new();
         io::copy(&mut from, &mut ctx)?;
 
-        Ok(MasterKey::from_slice(&ctx.fixed_result()))
+        Ok(MasterKey::from_slice(&ctx.finalize()))
     }
 }
 
 impl MacKey {
     pub fn begin(&self) -> hmac::Hmac<sha2::Sha256> {
-        hmac::Hmac::<sha2::Sha256>::new_varkey(&self.0).expect("all keys are valid for hmac")
+        hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.0).expect("all keys are valid for hmac")
     }
 }
 
