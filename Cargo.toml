@@ -50,11 +50,11 @@ version = "0.2"
 
 [dependencies.pretty_env_logger]
 optional = true
-version = "0.3"
+version = "0.5"
 
 
 [dev-dependencies]
-pretty_env_logger = "0.3"
+pretty_env_logger = "0.5"
 
 [features]
 default = ["cli"]

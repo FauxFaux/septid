@@ -41,9 +41,11 @@ where
 {
     let mut buf = [0u8; packet::PACKET_LEN];
     loop {
+        log::debug!("reading");
         from.read_exact(&mut buf)
             .await
             .with_context(|| anyhow!("taking a packet from the wire"))?;
+        log::debug!("read");
         let output = packet::unpacket(&mut crypto, buf.as_mut()).map_err(|e| anyhow!(e))?;
         to.write_all(output).await?;
     }

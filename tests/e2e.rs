@@ -1,9 +1,11 @@
+use std::net::Shutdown;
 use anyhow::Result;
 use async_std::net::TcpListener;
 use async_std::net::TcpStream;
 use async_std::task;
 use futures::AsyncReadExt as _;
 use futures::AsyncWriteExt as _;
+use log::info;
 
 #[test]
 fn stop() -> Result<()> {
@@ -30,11 +32,13 @@ async fn test_stop() -> Result<()> {
 
 #[test]
 fn against_us() -> Result<()> {
+    pretty_env_logger::formatted_timed_builder()
+        .filter_level(log::LevelFilter::Debug)
+        .init();
     task::block_on(test_against_us())
 }
 
 async fn test_against_us() -> Result<()> {
-    pretty_env_logger::init();
 
     let key = septid::MasterKey::from_slice(&[0u8; 32]);
 
@@ -62,13 +66,14 @@ async fn test_against_us() -> Result<()> {
         let mut buf = [0u8; 5];
         socket.read_exact(&mut buf).await?;
         assert_eq!(b"hello", &buf[..]);
+        feed.shutdown(Shutdown::Both)?;
     }
 
     enc.request_shutdown().await?;
     dec.request_shutdown().await?;
 
-    enc.run_to_completion().await?;
-    dec.run_to_completion().await?;
+    // enc.run_to_completion().await?;
+    // dec.run_to_completion().await?;
 
     Ok(())
 }

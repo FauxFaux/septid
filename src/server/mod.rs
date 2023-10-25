@@ -76,6 +76,7 @@ pub async fn start_server(config: &StartServer) -> Result<Running> {
                 )));
             }
 
+            log::debug!("awaiting worker shutdown...");
             while let Some(worker) = workers.next().await {
                 worker?;
             }
