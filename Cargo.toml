@@ -14,10 +14,11 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0"
-aes-ctr = "0.6"
+aes = "0.8"
 async-std = "1"
 clap = { version = "4", features = ["derive", "cargo"] }
 crypto-mac = "0.11"
+ctr = "0.9"
 futures = "0.3"
 log = "0.4"
 sha2 = "0.10"

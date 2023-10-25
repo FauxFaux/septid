@@ -1,8 +1,5 @@
 use std::io;
 
-use aes_ctr::cipher::stream::NewStreamCipher;
-use aes_ctr::cipher::stream::SyncStreamCipher;
-use aes_ctr::Aes256Ctr;
 use anyhow::ensure;
 use anyhow::Result;
 use hmac::Mac;
@@ -119,7 +116,9 @@ pub(crate) fn aes_ctr(crypto: &mut SessionCrypto, data: &mut [u8]) -> u64 {
     let mut nonce = [0u8; 16];
     nonce[..8].copy_from_slice(&number_to_use.to_be_bytes());
 
-    let mut cipher = Aes256Ctr::new_var(&crypto.enc.0[..], &nonce).expect("length from arrays");
+    use ctr::cipher::{KeyIvInit, StreamCipher};
+    let mut cipher = ctr::Ctr128LE::<aes::Aes256>::new_from_slices(&crypto.enc.0[..], &nonce)
+        .expect("length from arrays");
     cipher.apply_keystream(data);
 
     number_to_use
