@@ -32,7 +32,8 @@ async fn test_stop() -> Result<()> {
 #[test]
 fn against_us() -> Result<()> {
     pretty_env_logger::formatted_timed_builder()
-        .filter_level(log::LevelFilter::Debug)
+        .parse_default_env()
+        .is_test(true)
         .init();
     task::block_on(test_against_us())
 }
